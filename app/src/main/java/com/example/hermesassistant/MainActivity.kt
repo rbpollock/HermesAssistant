@@ -26,8 +26,13 @@ import okio.ByteString.Companion.toByteString
 import java.util.concurrent.TimeUnit
 
 import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener as VoskRecognitionListener
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var statusText: TextView
@@ -47,6 +52,9 @@ class MainActivity : AppCompatActivity() {
     private var audioTempFile: File? = null
     private var audioOutputStream: FileOutputStream? = null
 
+    private var voskModel: Model? = null
+    private var voskService: SpeechService? = null
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -76,11 +84,64 @@ class MainActivity : AppCompatActivity() {
 
         setupSpeechRecognizer()
         connectWebSocket()
+        initVosk()
 
         speakButton.setOnClickListener { startListening() }
 
         // Auto-start listening if invoked via the OS Assistant hardware button
         if (intent?.action == Intent.ACTION_ASSIST) {
+            startListening()
+        }
+    }
+
+    private fun initVosk() {
+        StorageService.unpack(this, "model", "model",
+            { model: Model ->
+                voskModel = model
+                startVoskWakeWord()
+            },
+            { exception ->
+                runOnUiThread { statusText.text = "Failed to load wake word model: ${exception.message}" }
+            }
+        )
+    }
+
+    private fun startVoskWakeWord() {
+        if (voskModel == null) return
+        try {
+            val recognizer = Recognizer(voskModel, 16000.0f)
+            voskService = SpeechService(recognizer, 16000.0f)
+            voskService?.startListening(this)
+            runOnUiThread { speakButton.text = "LISTENING FOR WAKE WORD" }
+        } catch (e: Exception) {
+            runOnUiThread { statusText.text = "Vosk Error: ${e.message}" }
+        }
+    }
+
+    override fun onPartialResult(hypothesis: String?) {
+        if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
+            triggerAssistantFromWakeWord()
+        }
+    }
+
+    override fun onResult(hypothesis: String?) {
+        if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
+            triggerAssistantFromWakeWord()
+        }
+    }
+
+    override fun onFinalResult(hypothesis: String?) {}
+    override fun onError(exception: Exception?) {}
+    override fun onTimeout() {}
+
+    private fun triggerAssistantFromWakeWord() {
+        // Pause Vosk so Android's main recognizer can take the microphone
+        voskService?.stop()
+        voskService = null
+        
+        runOnUiThread {
+            statusText.text = "Wake word detected!"
+            speakButton.text = "TAP TO SPEAK TO HERMES"
             startListening()
         }
     }
@@ -169,6 +230,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startListening() {
+        // Stop wake word if it's currently running so we can grab the mic
+        voskService?.stop()
+        voskService = null
+        
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
@@ -206,6 +271,8 @@ class MainActivity : AppCompatActivity() {
                         connectWebSocket()
                     }
                 }
+                // Restart wake word listener after the user finishes their command
+                startVoskWakeWord()
             }
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
