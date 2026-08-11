@@ -8,7 +8,6 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.util.Log
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
@@ -30,7 +29,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Basic layout programmatically to avoid complex XML setup
+        
         val layout = android.widget.LinearLayout(this).apply {
             orientation = android.widget.LinearLayout.VERTICAL
             setPadding(64, 64, 64, 64)
@@ -51,21 +50,35 @@ class MainActivity : AppCompatActivity() {
         layout.addView(speakButton)
         setContentView(layout)
 
-        // Request Audio Permission
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
         }
 
         setupSpeechRecognizer()
 
-        speakButton.setOnClickListener {
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            }
-            speechRecognizer.startListening(intent)
-            statusText.text = "Listening..."
+        speakButton.setOnClickListener { startListening() }
+
+        // Auto-start listening if invoked via the OS Assistant hardware button
+        if (intent?.action == Intent.ACTION_ASSIST) {
+            startListening()
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Auto-start listening if invoked while the app is already open in the background
+        if (intent.action == Intent.ACTION_ASSIST) {
+            startListening()
+        }
+    }
+
+    private fun startListening() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+        }
+        speechRecognizer.startListening(intent)
+        statusText.text = "Listening..."
     }
 
     private fun setupSpeechRecognizer() {
@@ -99,7 +112,6 @@ class MainActivity : AppCompatActivity() {
         val json = """{"message": "$text"}"""
         val body = json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
         
-        // Connect to your Tailscale IP where the FastAPI server is running
         val request = Request.Builder()
             .url("http://100.123.127.108:8000/chat")
             .post(body)
@@ -116,16 +128,13 @@ class MainActivity : AppCompatActivity() {
                     return
                 }
 
-                // Read the response text from headers
                 val responseText = response.header("X-Response-Text", "Audio received")
                 runOnUiThread { statusText.text = "Hermes: $responseText" }
 
-                // Save the MP3 stream to a temporary file
                 val tempFile = File(cacheDir, "hermes_reply.mp3")
                 val sink = FileOutputStream(tempFile)
                 sink.use { it.write(response.body!!.bytes()) }
 
-                // Play the MP3
                 val mediaPlayer = MediaPlayer()
                 mediaPlayer.setDataSource(tempFile.absolutePath)
                 mediaPlayer.prepare()
