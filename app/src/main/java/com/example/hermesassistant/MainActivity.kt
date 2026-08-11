@@ -167,8 +167,16 @@ class MainActivity : AppCompatActivity() {
                 if (!matches.isNullOrEmpty()) {
                     val userText = matches[0]
                     statusText.text = "You: $userText\n\nSending to Hermes..."
-                    // sendToHermes(userText) - REPLACED WITH WEBSOCKET
-                    webSocket?.send(userText)
+                    val sent = webSocket?.send(userText) ?: false
+                    if (!sent) {
+                        statusText.text = "Disconnected. Reconnecting..."
+                        connectWebSocket()
+                        // Try sending one more time after a short delay
+                        Thread {
+                            Thread.sleep(1000)
+                            webSocket?.send(userText)
+                        }.start()
+                    }
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
