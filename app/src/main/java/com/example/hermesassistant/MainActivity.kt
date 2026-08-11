@@ -20,12 +20,21 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var statusText: TextView
     private lateinit var speakButton: Button
     private val client = OkHttpClient()
+    private var webSocket: WebSocket? = null
+    private var mediaPlayer: MediaPlayer? = null
+    
+    // For streaming audio chunks
+    private var audioTempFile: File? = null
+    private var audioOutputStream: FileOutputStream? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,12 +64,70 @@ class MainActivity : AppCompatActivity() {
         }
 
         setupSpeechRecognizer()
+        connectWebSocket()
 
         speakButton.setOnClickListener { startListening() }
 
         // Auto-start listening if invoked via the OS Assistant hardware button
         if (intent?.action == Intent.ACTION_ASSIST) {
             startListening()
+        }
+    }
+
+    private fun connectWebSocket() {
+        val request = Request.Builder()
+            .url("ws://100.123.127.108:8000/chat/stream")
+            .build()
+            
+        webSocket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                runOnUiThread { statusText.text = "Connected to Server" }
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                // We receive JSON status updates from the server
+                runOnUiThread {
+                    if (text.contains("\"type\": \"text\"")) {
+                        // Very crude JSON parse for demo purposes
+                        val msg = text.split("\"message\": \"")[1].split("\"")[0]
+                        statusText.text = "Hermes: $msg"
+                    } else if (text.contains("\"type\": \"status\"")) {
+                        val msg = text.split("\"message\": \"")[1].split("\"")[0]
+                        statusText.text = msg
+                    } else if (text.contains("\"type\": \"audio_end\"")) {
+                        playAudioStream()
+                    }
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                // Receive streaming raw MP3 byte chunks
+                if (audioOutputStream == null) {
+                    audioTempFile = File(cacheDir, "stream_${System.currentTimeMillis()}.mp3")
+                    audioOutputStream = FileOutputStream(audioTempFile)
+                }
+                audioOutputStream?.write(bytes.toByteArray())
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                runOnUiThread { statusText.text = "WS Error: ${t.message}" }
+            }
+        })
+    }
+
+    private fun playAudioStream() {
+        audioOutputStream?.close()
+        audioOutputStream = null
+        
+        audioTempFile?.let { file ->
+            runOnUiThread {
+                mediaPlayer?.release()
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    prepare()
+                    start()
+                }
+            }
         }
     }
 
@@ -100,7 +167,8 @@ class MainActivity : AppCompatActivity() {
                 if (!matches.isNullOrEmpty()) {
                     val userText = matches[0]
                     statusText.text = "You: $userText\n\nSending to Hermes..."
-                    sendToHermes(userText)
+                    // sendToHermes(userText) - REPLACED WITH WEBSOCKET
+                    webSocket?.send(userText)
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
