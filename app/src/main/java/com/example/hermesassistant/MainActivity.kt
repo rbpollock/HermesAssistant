@@ -25,6 +25,8 @@ import okio.ByteString.Companion.toByteString
 
 import java.util.concurrent.TimeUnit
 
+import org.json.JSONObject
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var speechRecognizer: SpeechRecognizer
@@ -90,17 +92,19 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                // We receive JSON status updates from the server
                 runOnUiThread {
-                    if (text.contains("\"type\": \"text\"")) {
-                        // Very crude JSON parse for demo purposes
-                        val msg = text.split("\"message\": \"")[1].split("\"")[0]
-                        statusText.text = "Hermes: $msg"
-                    } else if (text.contains("\"type\": \"status\"")) {
-                        val msg = text.split("\"message\": \"")[1].split("\"")[0]
-                        statusText.text = msg
-                    } else if (text.contains("\"type\": \"audio_end\"")) {
-                        playAudioStream()
+                    try {
+                        val json = JSONObject(text)
+                        val type = json.optString("type")
+                        if (type == "text") {
+                            statusText.text = "Hermes: ${json.optString("message")}"
+                        } else if (type == "status") {
+                            statusText.text = json.optString("message")
+                        } else if (type == "audio_end") {
+                            playAudioStream()
+                        }
+                    } catch (e: Exception) {
+                        statusText.text = "Error parsing: ${e.message}"
                     }
                 }
             }
