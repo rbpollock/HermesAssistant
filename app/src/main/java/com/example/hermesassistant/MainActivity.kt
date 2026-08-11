@@ -33,10 +33,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var speakButton: Button
     private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS) // Generous connect timeout for Tailscale
         .readTimeout(0, TimeUnit.MILLISECONDS) // No read timeout for long LLM responses
         .pingInterval(15, TimeUnit.SECONDS) // Keep Tailscale NAT alive
+        .retryOnConnectionFailure(true)
         .build()
     private var webSocket: WebSocket? = null
+    private var isConnected = false
+    private var pendingMessage: String? = null
     private var mediaPlayer: MediaPlayer? = null
     
     // For streaming audio chunks
@@ -82,13 +86,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun connectWebSocket() {
+        if (isConnected) return
+        
+        webSocket?.cancel()
+        
         val request = Request.Builder()
             .url("ws://100.123.127.108:8000/chat/stream")
             .build()
             
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                runOnUiThread { statusText.text = "Connected to Server" }
+                isConnected = true
+                runOnUiThread { 
+                    statusText.text = "Connected to Server" 
+                    pendingMessage?.let {
+                        webSocket.send(it)
+                        pendingMessage = null
+                    }
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                isConnected = false
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                isConnected = false
+                runOnUiThread { statusText.text = "WS Error: ${t.message}" }
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -116,10 +140,6 @@ class MainActivity : AppCompatActivity() {
                     audioOutputStream = FileOutputStream(audioTempFile)
                 }
                 audioOutputStream?.write(bytes.toByteArray())
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                runOnUiThread { statusText.text = "WS Error: ${t.message}" }
             }
         })
     }
@@ -176,15 +196,14 @@ class MainActivity : AppCompatActivity() {
                 if (!matches.isNullOrEmpty()) {
                     val userText = matches[0]
                     statusText.text = "You: $userText\n\nSending to Hermes..."
-                    val sent = webSocket?.send(userText) ?: false
-                    if (!sent) {
+                    
+                    if (isConnected && webSocket?.send(userText) == true) {
+                        // Sent successfully
+                    } else {
+                        isConnected = false
                         statusText.text = "Disconnected. Reconnecting..."
+                        pendingMessage = userText
                         connectWebSocket()
-                        // Try sending one more time after a short delay
-                        Thread {
-                            Thread.sleep(1000)
-                            webSocket?.send(userText)
-                        }.start()
                     }
                 }
             }
