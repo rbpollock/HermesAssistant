@@ -101,7 +101,7 @@ class MainActivity : AppCompatActivity() {
         
         // Connect to your Tailscale IP where the FastAPI server is running
         val request = Request.Builder()
-            .url("http://100.66.59.61:8000/chat")
+            .url("http://100.123.127.108:8000/chat")
             .post(body)
             .build()
 
