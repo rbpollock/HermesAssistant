@@ -23,12 +23,17 @@ import java.io.IOException
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 
+import java.util.concurrent.TimeUnit
+
 class MainActivity : AppCompatActivity() {
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var statusText: TextView
     private lateinit var speakButton: Button
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.MILLISECONDS) // No read timeout for long LLM responses
+        .pingInterval(15, TimeUnit.SECONDS) // Keep Tailscale NAT alive
+        .build()
     private var webSocket: WebSocket? = null
     private var mediaPlayer: MediaPlayer? = null
     
