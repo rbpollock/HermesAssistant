@@ -143,7 +143,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             } else if (!isConnected) {
                 // Offline: transcribe locally with Vosk and queue the message
                 startOfflineDictation()
-            } else if (mediaPlayer == null && audioTempFile != null && !isSpeaking) {
+            } else if (mediaPlayer == null && audioTempFile != null && !isSpeaking && playbackQueue.isEmpty()) {
                 // A response is waiting (no Bluetooth autoplay happened) — tap plays it
                 playPendingAudio()
             } else {
@@ -183,6 +183,21 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
+                // So the unified playback queue knows when a spoken alert
+                // actually finished, and can start the next item.
+                tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+                    override fun onDone(utteranceId: String?) {
+                        runOnUiThread { onPlaybackItemDone() }
+                    }
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        runOnUiThread { onPlaybackItemDone() }
+                    }
+                    override fun onError(utteranceId: String?, errorCode: Int) {
+                        runOnUiThread { onPlaybackItemDone() }
+                    }
+                })
             }
         }
     }
@@ -503,9 +518,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val urgent = kind == "question" || kind == "approval"
         showSystemNotification(title, message, host, urgent)
 
-        // Speak the alert aloud ONLY when a Bluetooth device is connected
+        // Speak the alert aloud ONLY when a Bluetooth device is connected,
+        // and route it through the playback queue so it never talks over
+        // response audio that's already playing.
         if (isBluetoothConnected()) {
-            tts?.speak("$title. $message", TextToSpeech.QUEUE_FLUSH, null, "notify")
+            enqueuePlayback(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
         }
     }
 
@@ -544,10 +561,66 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     // ------------------------------------------------------------------
-    // Audio playback (Bluetooth-gated autoplay)
+    // Audio playback — unified FIFO queue (Bluetooth-gated autoplay)
+    //
+    // Both audio sources (server response MP3 via MediaPlayer, and notify
+    // alerts via TextToSpeech) feed the same queue. Items play strictly
+    // one at a time: the next starts only after the current one finishes,
+    // so a "Hermes finished" alert arriving mid-response is queued, never
+    // spoken over the top of the audio already playing.
     // ------------------------------------------------------------------
 
+    private data class PlaybackItem(val audioFile: File?, val spokenText: String?)
+
+    private val playbackQueue = ArrayDeque<PlaybackItem>()
     private var isSpeaking = false
+
+    private fun enqueuePlayback(item: PlaybackItem) {
+        playbackQueue.addLast(item)
+        if (!isSpeaking) startNextPlayback()
+    }
+
+    private fun startNextPlayback() {
+        val item = playbackQueue.removeFirstOrNull()
+        if (item == null) {
+            isSpeaking = false
+            // Feature 1: after the response finishes playing, automatically listen again
+            scheduleAutoListen()
+            return
+        }
+        isSpeaking = true
+        setStatus("Speaking...", StatusRingView.State.SPEAKING)
+
+        val file = item.audioFile
+        val text = item.spokenText
+        when {
+            file != null -> {
+                // Server-generated response audio
+                mediaPlayer?.release()
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(file.absolutePath)
+                    setOnCompletionListener { runOnUiThread { onPlaybackItemDone() } }
+                    setOnErrorListener { _, _, _ -> runOnUiThread { onPlaybackItemDone() }; true }
+                    prepare()
+                    start()
+                }
+            }
+            text != null -> {
+                // Notify alert via TTS; onDone() fires the next item
+                val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "notify")
+                if (tts == null || result == TextToSpeech.ERROR) {
+                    onPlaybackItemDone()
+                }
+            }
+            else -> onPlaybackItemDone()
+        }
+    }
+
+    private fun onPlaybackItemDone() {
+        mediaPlayer?.release()
+        mediaPlayer = null
+        startNextPlayback()
+    }
 
     private fun playAudioStream() {
         audioOutputStream?.close()
@@ -562,29 +635,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 return
             }
             runOnUiThread {
-                playFile(file)
+                enqueuePlayback(PlaybackItem(audioFile = file, spokenText = null))
             }
         }
     }
 
     private fun playPendingAudio() {
-        audioTempFile?.let { playFile(it) }
-    }
-
-    private fun playFile(file: File) {
-        isSpeaking = true
-        setStatus("Speaking...", StatusRingView.State.SPEAKING)
-        mediaPlayer?.release()
-        mediaPlayer = MediaPlayer().apply {
-            setDataSource(file.absolutePath)
-            setOnCompletionListener {
-                isSpeaking = false
-                mediaPlayer = null
-                // Feature 1: after the response finishes playing, automatically listen again
-                scheduleAutoListen()
-            }
-            prepare()
-            start()
+        audioTempFile?.let {
+            enqueuePlayback(PlaybackItem(audioFile = it, spokenText = null))
         }
     }
 
@@ -743,7 +801,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
                 runOnUiThread {
                     if (isBluetoothConnected()) {
-                        playFile(tempFile)
+                        enqueuePlayback(PlaybackItem(audioFile = tempFile, spokenText = null))
                     } else {
                         audioTempFile = tempFile
                         setStatus("Response ready — connect Bluetooth to hear it, or tap to play", StatusRingView.State.CONNECTED)
