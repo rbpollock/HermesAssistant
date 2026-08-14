@@ -54,7 +54,14 @@ async def hermes_event(event: HermesEvent):
     else:
         # on_session_end and anything else
         title = "Hermes finished"
-        message = (event.extra or {}).get("session_key") or event.session_id or "A session just completed"
+        # Prefer the actual response text (pulled by notify_hermes.py from
+        # the local session DB) over a bare session id.
+        message = (event.extra or {}).get("response_text") or (event.extra or {}).get("session_key") or event.session_id or "A session just completed"
+        # Include the session title when we have one, so the phone can
+        # show context ("Solar System Trivia Question") not just an id.
+        session_title = (event.extra or {}).get("session_title") or ""
+        if session_title:
+            title = f"Hermes finished · {session_title}"
 
     payload = {
         "type": "notify",
@@ -110,21 +117,43 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         while True:
-            # 1. Wait for Android to send the transcribed text
+            # 1. Wait for Android to send the transcribed text.
+            #    Plain text = normal voice chat (daily android session).
+            #    JSON {"message": ..., "session_id": ...} = reply targeted
+            #    at a specific Hermes session (e.g. answer a clarify prompt).
             data = await websocket.receive_text()
-            print(f"🎙️ Received from Android: {data}")
+            print(f"🎙️ Received from Android: {data[:200]}")
 
             # 2. Tell Android we are thinking
             await websocket.send_json({"type": "status", "message": "Thinking..."})
+
+            message = data
+            target_session = None
+            stripped = data.strip()
+            if stripped.startswith("{"):
+                try:
+                    import json as _json
+                    obj = _json.loads(stripped)
+                    if isinstance(obj, dict) and obj.get("message"):
+                        message = obj["message"]
+                        target_session = obj.get("session_id") or None
+                except Exception:
+                    pass  # not JSON — treat as plain text
 
             # 3. Call Hermes
             env = os.environ.copy()
             env["PATH"] = f"/home/service/.local/bin:{env.get('PATH', '')}"
 
+            # Target session: explicit session_id wins; otherwise fall back
+            # to the daily rotating android session.
+            effective_session = target_session or session_name
+            cmd = ["hermes", "-z", message, "--continue", effective_session]
+            print(f"🎯 Session: {effective_session}")
+
             try:
                 result = await asyncio.to_thread(
                     subprocess.run,
-                    ["hermes", "-z", data, "--continue", session_name],
+                    cmd,
                     capture_output=True,
                     text=True,
                     check=True,

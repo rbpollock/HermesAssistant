@@ -12,6 +12,7 @@ or delays the agent.
 """
 import json
 import os
+import sqlite3
 import sys
 import urllib.request
 
@@ -35,6 +36,75 @@ INTERESTING_EVENTS = {
 SELF_CWD_PREFIXES = {
     "/home/service/streaming_backend",
 }
+
+
+def _session_db_path():
+    """Locate the Hermes session DB for this host."""
+    hermes_home = os.environ.get("HERMES_HOME", "")
+    candidates = []
+    if hermes_home:
+        candidates.append(os.path.join(hermes_home, "state.db"))
+    candidates += [
+        os.path.expanduser("~/.hermes/state.db"),
+        os.path.expanduser("~/AppData/Local/hermes/state.db"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return None
+
+
+def _last_assistant_text(session_id: str) -> str:
+    """Fetch the most recent assistant message for a session, if any.
+
+    This is what makes notifications useful: instead of just a session id,
+    the phone can show the actual text Hermes just produced. Best-effort —
+    a missing DB or session simply yields "" (caller falls back to the id).
+    """
+    if not session_id:
+        return ""
+    db_path = _session_db_path()
+    if not db_path:
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT content FROM messages "
+                "WHERE session_id = ? AND role = 'assistant' AND content IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return (row[0] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
+
+
+def _session_title(session_id: str) -> str:
+    """Fetch the human-readable title for a session, if any."""
+    if not session_id:
+        return ""
+    db_path = _session_db_path()
+    if not db_path:
+        return ""
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=3)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT title FROM sessions WHERE id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return (row[0] or "").strip() if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
 
 
 def main() -> None:
@@ -62,6 +132,18 @@ def main() -> None:
     # Tag with hostname so the phone can say which machine it came from.
     payload.setdefault("extra", {})
     payload["extra"]["host"] = os.uname().nodename if hasattr(os, "uname") else "windows"
+
+    # Feature: attach the actual response text and session title for
+    # session-end events so the phone notification has context, not just
+    # a session id.
+    if event == "on_session_end":
+        session_id = payload.get("session_id") or ""
+        text = _last_assistant_text(session_id)
+        if text:
+            payload["extra"]["response_text"] = text[:500]
+        title = _session_title(session_id)
+        if title:
+            payload["extra"]["session_title"] = title[:120]
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

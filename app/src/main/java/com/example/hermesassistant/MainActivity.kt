@@ -97,6 +97,12 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     // True while we are flushing the offline queue after reconnect
     private var flushingQueue = false
 
+    // Targeted-reply state: set when a notify event carries a session_id,
+    // so the next spoken message is routed back to that session
+    // (answering a clarify prompt or approval request).
+    private var replySessionId: String = ""
+    private var replySessionTitle: String = ""
+
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
         private const val NOTIFICATION_ID = 42
@@ -472,6 +478,15 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val title = json.optString("title", "Hermes")
         val message = json.optString("message", "")
         val host = json.optString("host", "")
+        val sessionId = json.optString("session_id", "")
+
+        // Remember which session this came from so the next spoken message
+        // can be routed back to it (answering a clarify prompt, etc.).
+        if (sessionId.isNotEmpty()) {
+            replySessionId = sessionId
+            replySessionTitle = title
+            runOnUiThread { updateReplyBadge() }
+        }
 
         setStatus("$title\n$message", StatusRingView.State.CONNECTED)
         chatHistory.append(ChatMessage("notify", "$title — $message"))
@@ -483,6 +498,20 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         // Speak the alert aloud ONLY when a Bluetooth device is connected
         if (isBluetoothConnected()) {
             tts?.speak("$title. $message", TextToSpeech.QUEUE_FLUSH, null, "notify")
+        }
+    }
+
+    /** Show a "reply to <session>" hint when a targeted reply is armed. */
+    private fun updateReplyBadge() {
+        subText.text = if (replySessionId.isNotEmpty()) {
+            "Reply goes to: $replySessionTitle — tap to speak"
+        } else {
+            val n = chatHistory.queue.size
+            if (n > 0) {
+                "$n message${if (n == 1) "" else "s"} queued — will send when connected"
+            } else {
+                "Tap to speak · wake word: \"Hey Hermes\""
+            }
         }
     }
 
@@ -638,8 +667,22 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                     renderHistory()
                     setStatus("You: $userText", StatusRingView.State.THINKING)
 
-                    if (isConnected && webSocket?.send(userText) == true) {
-                        // Sent successfully
+                    // If a targeted reply is armed (a notify arrived with a
+                    // session_id), wrap the message so the server routes it
+                    // to that specific Hermes session.
+                    val payload = if (replySessionId.isNotEmpty()) {
+                        "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
+                    } else {
+                        userText
+                    }
+
+                    if (isConnected && webSocket?.send(payload) == true) {
+                        // Sent successfully — clear the targeted reply
+                        if (replySessionId.isNotEmpty()) {
+                            replySessionId = ""
+                            replySessionTitle = ""
+                            runOnUiThread { updateReplyBadge() }
+                        }
                     } else {
                         // Offline (or dropped mid-send): queue it persistently
                         isConnected = false
