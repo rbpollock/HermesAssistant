@@ -151,11 +151,19 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             }
         }
 
-        // Auto-start listening if invoked via the OS Assistant hardware button
-        // or via our custom action from the VoiceInteractionSession
-        if (intent?.action == Intent.ACTION_ASSIST || intent?.action == "com.example.hermesassistant.START_LISTENING") {
+        // Auto-start listening if invoked via the OS Assistant hardware button,
+        // the headphone/BT button (VOICE_COMMAND), or our custom action from
+        // the VoiceInteractionSession.
+        if (isVoiceInvocation(intent?.action)) {
             if (isConnected) startListening() else startOfflineDictation()
         }
+    }
+
+    /** True when the intent asks us to act as the voice assistant. */
+    private fun isVoiceInvocation(action: String?): Boolean {
+        return action == Intent.ACTION_ASSIST
+            || action == Intent.ACTION_VOICE_COMMAND
+            || action == "com.example.hermesassistant.START_LISTENING"
     }
 
     private fun createNotificationChannel() {
@@ -621,7 +629,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Auto-start listening if invoked while the app is already open in the background
-        if (intent.action == Intent.ACTION_ASSIST || intent.action == "com.example.hermesassistant.START_LISTENING") {
+        if (isVoiceInvocation(intent.action)) {
             if (isConnected) startListening() else startOfflineDictation()
         }
     }

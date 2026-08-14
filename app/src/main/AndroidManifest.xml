@@ -28,6 +28,12 @@
                 <action android:name="android.intent.action.ASSIST" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
+            <!-- Headphone / Bluetooth button long-press (and some car
+                 head units) fires VOICE_COMMAND on many devices -->
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_COMMAND" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
         </activity>
 
         <!-- Registers as a full Default Digital Assistant to replace Bixby -->
