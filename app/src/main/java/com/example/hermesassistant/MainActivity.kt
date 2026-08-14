@@ -8,6 +8,8 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
@@ -17,7 +19,11 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.view.View
+import android.view.ViewGroup
 import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -33,7 +39,6 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 import okio.ByteString
-import okio.ByteString.Companion.toByteString
 
 import org.json.JSONObject
 import org.vosk.Model
@@ -49,8 +54,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private lateinit var subText: TextView
     private lateinit var speakButton: Button
     private lateinit var statusRing: StatusRingView
+    private lateinit var historyList: LinearLayout
+    private lateinit var historyScroll: ScrollView
     private lateinit var notificationManager: NotificationManager
     private var tts: TextToSpeech? = null
+    private lateinit var chatHistory: ChatHistoryStore
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS) // Generous connect timeout for Tailscale
@@ -73,6 +81,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     // Guards against duplicate auto-listen triggers
     private var autoListenScheduled = false
 
+    // Offline dictation mode: Vosk captures a full phrase instead of
+    // scanning for the wake word, and the text goes to the offline queue.
+    private var dictationMode = false
+    private var dictationWatchdog: Runnable? = null
+
+    // True while we are flushing the offline queue after reconnect
+    private var flushingQueue = false
+
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
         private const val NOTIFICATION_ID = 42
@@ -87,7 +103,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         subText = findViewById(R.id.subText)
         speakButton = findViewById(R.id.speakButton)
         statusRing = findViewById(R.id.statusRing)
+        historyList = findViewById(R.id.historyList)
+        historyScroll = findViewById(R.id.historyScroll)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        chatHistory = ChatHistoryStore(this)
 
         createNotificationChannel()
         initTts()
@@ -100,10 +119,18 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         setupSpeechRecognizer()
         connectWebSocket()
         initVosk()
+        renderHistory()
+        updateQueueBadge()
 
         speakButton.setOnClickListener {
-            // If a response is waiting (no Bluetooth autoplay happened), tap plays it
-            if (mediaPlayer == null && audioTempFile != null && !isSpeaking) {
+            if (dictationMode) {
+                // Tap again while dictating = cancel
+                exitDictationMode()
+            } else if (!isConnected) {
+                // Offline: transcribe locally with Vosk and queue the message
+                startOfflineDictation()
+            } else if (mediaPlayer == null && audioTempFile != null && !isSpeaking) {
+                // A response is waiting (no Bluetooth autoplay happened) — tap plays it
                 playPendingAudio()
             } else {
                 startListening()
@@ -113,7 +140,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         // Auto-start listening if invoked via the OS Assistant hardware button
         // or via our custom action from the VoiceInteractionSession
         if (intent?.action == Intent.ACTION_ASSIST || intent?.action == "com.example.hermesassistant.START_LISTENING") {
-            startListening()
+            if (isConnected) startListening() else startOfflineDictation()
         }
     }
 
@@ -147,7 +174,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     // ------------------------------------------------------------------
-    // Vosk wake word
+    // Vosk wake word + offline dictation
     // ------------------------------------------------------------------
 
     private fun initVosk() {
@@ -177,30 +204,103 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
     }
 
+    /** Offline: Vosk captures the next full phrase and queues it. */
+    private fun startOfflineDictation() {
+        // Make sure Vosk is actually running (it doubles as the dictation engine)
+        if (voskService == null) {
+            startVoskWakeWord()
+        }
+        dictationMode = true
+        speakButton.text = "TAP TO CANCEL"
+        setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
+
+        // If the user says nothing, fall back to wake-word mode after 15s
+        dictationWatchdog?.let { statusText.removeCallbacks(it) }
+        dictationWatchdog = Runnable {
+            if (dictationMode) {
+                exitDictationMode()
+            }
+        }.also { statusText.postDelayed(it, 15000) }
+    }
+
+    private fun exitDictationMode() {
+        dictationMode = false
+        dictationWatchdog?.let { statusText.removeCallbacks(it) }
+        dictationWatchdog = null
+        speakButton.text = "LISTENING FOR WAKE WORD"
+        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
+        // Vosk keeps listening — restart the service so the recognizer
+        // starts a fresh phrase-buffer in wake-word mode
+        voskService?.stop()
+        voskService = null
+        startVoskWakeWord()
+    }
+
     override fun onPartialResult(hypothesis: String?) {
+        if (dictationMode) return // wait for the final phrase
         if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
             triggerAssistantFromWakeWord()
         }
     }
 
     override fun onResult(hypothesis: String?) {
+        if (dictationMode) {
+            handleDictatedText(hypothesis)
+            return
+        }
         if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
             triggerAssistantFromWakeWord()
         }
     }
 
     override fun onFinalResult(hypothesis: String?) {}
-    override fun onError(exception: Exception?) {}
-    override fun onTimeout() {}
+
+    override fun onError(exception: Exception?) {
+        if (dictationMode) {
+            exitDictationMode()
+        }
+    }
+
+    override fun onTimeout() {
+        if (dictationMode) {
+            exitDictationMode()
+        }
+    }
+
+    /** A full phrase was captured by Vosk while offline — queue it. */
+    private fun handleDictatedText(hypothesis: String?) {
+        val text = (hypothesis ?: "").trim()
+        dictationMode = false
+        dictationWatchdog?.let { statusText.removeCallbacks(it) }
+        dictationWatchdog = null
+
+        if (text.isNotEmpty()) {
+            // Strip a leading wake word if the model caught it
+            val clean = text
+                .replaceFirst("(?i)^(hey )?hermes[\\s,.-]*".toRegex(), "")
+                .trim()
+            if (clean.isNotEmpty()) {
+                chatHistory.enqueue(clean)
+                renderHistory()
+                updateQueueBadge()
+                setStatus("Offline — queued: $clean", StatusRingView.State.CONNECTED)
+            }
+        }
+
+        // Back to wake-word listening
+        voskService?.stop()
+        voskService = null
+        startVoskWakeWord()
+    }
 
     private fun triggerAssistantFromWakeWord() {
-        // Pause Vosk so Android's main recognizer can take the microphone
+        // Pause Vosk so the main recognizer / dictation can take over
         voskService?.stop()
         voskService = null
 
         runOnUiThread {
             speakButton.text = "TAP TO SPEAK TO HERMES"
-            startListening()
+            if (isConnected) startListening() else startOfflineDictation()
         }
     }
 
@@ -226,6 +326,8 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                         webSocket.send(it)
                         pendingMessage = null
                     }
+                    // Feature 4: flush anything queued while offline
+                    flushQueueIfAny()
                 }
             }
 
@@ -246,12 +348,16 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                         when (type) {
                             "text" -> {
                                 setStatus("Hermes: ${json.optString("message")}", StatusRingView.State.CONNECTED)
+                                chatHistory.append(ChatMessage("hermes", json.optString("message")))
+                                renderHistory()
                             }
                             "status" -> {
                                 setStatus(json.optString("message"), StatusRingView.State.THINKING)
                             }
                             "audio_end" -> {
                                 playAudioStream()
+                                // If flushing queued messages, send the next one now
+                                if (flushingQueue) sendNextQueued()
                             }
                             "notify" -> {
                                 handleNotify(json)
@@ -279,6 +385,40 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     // ------------------------------------------------------------------
+    // Offline queue flush
+    // ------------------------------------------------------------------
+
+    private fun flushQueueIfAny() {
+        if (chatHistory.queue.isEmpty()) return
+        flushingQueue = true
+        sendNextQueued()
+    }
+
+    private fun sendNextQueued() {
+        val next = chatHistory.popQueued() ?: run {
+            flushingQueue = false
+            updateQueueBadge()
+            setStatus("All queued messages sent", StatusRingView.State.CONNECTED)
+            return
+        }
+        chatHistory.markQueuedDelivered(next)
+        renderHistory()
+        updateQueueBadge()
+        setStatus("Sending queued: ${next.text}", StatusRingView.State.THINKING)
+        if (isConnected && webSocket?.send(next.text) == true) {
+            // Response will arrive via onMessage; audio_end triggers the next send
+        } else {
+            // Send failed — put it back at the front and try again later
+            flushingQueue = false
+            chatHistory.requeue(next)
+            renderHistory()
+            updateQueueBadge()
+            setStatus("Reconnect lost — message re-queued", StatusRingView.State.IDLE)
+            connectWebSocket()
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Notify events from ANY Hermes session (shell hooks -> server relay)
     // ------------------------------------------------------------------
 
@@ -289,6 +429,8 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val host = json.optString("host", "")
 
         setStatus("$title\n$message", StatusRingView.State.CONNECTED)
+        chatHistory.append(ChatMessage("notify", "$title — $message"))
+        renderHistory()
 
         val urgent = kind == "question" || kind == "approval"
         showSystemNotification(title, message, host, urgent)
@@ -370,8 +512,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         statusText.postDelayed({
             autoListenScheduled = false
             // If the user tapped something else in the meantime, don't steal the mic
-            if (isSpeaking || voskService != null) return@postDelayed
-            startListening()
+            if (isSpeaking || voskService != null || flushingQueue) return@postDelayed
+            // Offline: return to wake-word mode rather than auto-dictating
+            if (isConnected) startListening() else startVoskWakeWord()
         }, 700)
     }
 
@@ -398,14 +541,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     // ------------------------------------------------------------------
-    // Speech recognition
+    // Speech recognition (online path)
     // ------------------------------------------------------------------
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         // Auto-start listening if invoked while the app is already open in the background
         if (intent.action == Intent.ACTION_ASSIST || intent.action == "com.example.hermesassistant.START_LISTENING") {
-            startListening()
+            if (isConnected) startListening() else startOfflineDictation()
         }
     }
 
@@ -433,22 +576,32 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 setStatus("Thinking...", StatusRingView.State.THINKING)
             }
             override fun onError(error: Int) {
-                setStatus("Error listening. Try again.", StatusRingView.State.IDLE)
-                startVoskWakeWord()
+                // Google STT may fail when offline — fall back to Vosk dictation
+                if (!isConnected) {
+                    startOfflineDictation()
+                } else {
+                    setStatus("Error listening. Try again.", StatusRingView.State.IDLE)
+                    startVoskWakeWord()
+                }
             }
 
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
                     val userText = matches[0]
+                    chatHistory.append(ChatMessage("user", userText))
+                    renderHistory()
                     setStatus("You: $userText", StatusRingView.State.THINKING)
 
                     if (isConnected && webSocket?.send(userText) == true) {
                         // Sent successfully
                     } else {
+                        // Offline (or dropped mid-send): queue it persistently
                         isConnected = false
-                        setStatus("Disconnected. Reconnecting...", StatusRingView.State.THINKING)
-                        pendingMessage = userText
+                        setStatus("Offline — message queued", StatusRingView.State.IDLE)
+                        chatHistory.enqueue(userText)
+                        renderHistory()
+                        updateQueueBadge()
                         connectWebSocket()
                     }
                 } else {
@@ -481,8 +634,12 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                     return
                 }
 
-                val responseText = response.header("X-Response-Text", "Audio received")
-                runOnUiThread { setStatus("Hermes: $responseText", StatusRingView.State.CONNECTED) }
+                val responseText = response.header("X-Response-Text", "Audio received") ?: "Audio received"
+                runOnUiThread {
+                    setStatus("Hermes: $responseText", StatusRingView.State.CONNECTED)
+                    chatHistory.append(ChatMessage("hermes", responseText))
+                    renderHistory()
+                }
 
                 val tempFile = File(cacheDir, "hermes_reply.mp3")
                 val sink = FileOutputStream(tempFile)
@@ -499,6 +656,67 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             }
         })
     }
+
+    // ------------------------------------------------------------------
+    // Chat history rendering
+    // ------------------------------------------------------------------
+
+    private fun renderHistory() {
+        historyList.removeAllViews()
+        chatHistory.messages.forEach { addBubble(it) }
+        historyScroll.post { historyScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private fun addBubble(m: ChatMessage) {
+        val bubbleMaxWidth = (resources.displayMetrics.widthPixels * 0.8f).toInt()
+        val tv = TextView(this).apply {
+            text = m.text + if (m.queued) "\n\u23F3 queued (offline)" else ""
+            textSize = 14f
+            setTextColor(0xFFE5E7EB.toInt())
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            maxWidth = bubbleMaxWidth
+            isClickable = false
+        }
+
+        val bg = GradientDrawable().apply {
+            cornerRadius = dp(14).toFloat()
+        }
+        val lp = LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6) }
+
+        when (m.role) {
+            "user" -> {
+                bg.setColor(if (m.queued) 0xFF3B2F1A.toInt() else 0xFF1D4ED8.toInt())
+                lp.gravity = android.view.Gravity.END
+            }
+            "hermes" -> {
+                bg.setColor(0xFF1E293B.toInt())
+                lp.gravity = android.view.Gravity.START
+            }
+            else -> { // notify
+                bg.setColor(0xFF111827.toInt())
+                bg.setStroke(dp(1), 0xFF334155.toInt())
+                lp.gravity = android.view.Gravity.CENTER
+                tv.setTextColor(0xFF93C5FD.toInt())
+                tv.textSize = 13f
+            }
+        }
+        tv.background = bg
+        historyList.addView(tv, lp)
+    }
+
+    private fun updateQueueBadge() {
+        val n = chatHistory.queue.size
+        subText.text = if (n > 0) {
+            "$n message${if (n == 1) "" else "s"} queued — will send when connected"
+        } else {
+            "Tap to speak · wake word: \"Hey Hermes\""
+        }
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun setStatus(text: String, state: StatusRingView.State) {
         statusText.text = text

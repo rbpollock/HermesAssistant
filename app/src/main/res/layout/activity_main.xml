@@ -1,18 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0D0F14"
     android:orientation="vertical">
 
-    <!-- Top spacer pushes the panel into the bottom half of the screen -->
-    <Space
+    <!-- Top half: scrollable chat history -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1"
+        android:orientation="vertical">
 
-    <!-- Bottom-half assistant panel -->
+        <TextView
+            android:id="@+id/historyHeader"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="20dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="8dp"
+            android:text="Conversation"
+            android:textColor="#8B93A7"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <ScrollView
+            android:id="@+id/historyScroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:fillViewport="true"
+            android:scrollbars="vertical">
+
+            <LinearLayout
+                android:id="@+id/historyList"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:paddingBottom="8dp" />
+        </ScrollView>
+    </LinearLayout>
+
+    <!-- Bottom half: assistant panel -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -24,21 +56,21 @@
 
         <com.example.hermesassistant.StatusRingView
             android:id="@+id/statusRing"
-            android:layout_width="200dp"
-            android:layout_height="200dp"
+            android:layout_width="180dp"
+            android:layout_height="180dp"
             android:contentDescription="Hermes status" />
 
         <TextView
             android:id="@+id/statusText"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginTop="28dp"
+            android:layout_marginTop="22dp"
             android:fontFamily="sans-serif-medium"
             android:gravity="center"
             android:lineSpacingExtra="4dp"
             android:text="Ready"
             android:textColor="#E5E7EB"
-            android:textSize="20sp" />
+            android:textSize="19sp" />
 
         <TextView
             android:id="@+id/subText"
@@ -48,17 +80,17 @@
             android:gravity="center"
             android:text="Tap to speak · wake word: &quot;Hey Hermes&quot;"
             android:textColor="#8B93A7"
-            android:textSize="13sp" />
+            android:textSize="12sp" />
 
         <Button
             android:id="@+id/speakButton"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginTop="24dp"
+            android:layout_height="52dp"
+            android:layout_marginTop="20dp"
             android:backgroundTint="#1E293B"
             android:text="TAP TO SPEAK TO HERMES"
             android:textColor="#E5E7EB"
-            android:textSize="15sp"
+            android:textSize="14sp"
             android:textStyle="bold" />
     </LinearLayout>
 </LinearLayout>
