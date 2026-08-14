@@ -71,6 +71,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private var pendingMessage: String? = null
     private var mediaPlayer: MediaPlayer? = null
 
+    // Auto-reconnect loop: when the socket dies (phone sleeps, Tailscale
+    // blips, network switch) keep trying every few seconds instead of
+    // showing a permanent "WS Error" and sitting dead.
+    private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var reconnectRunnable: Runnable? = null
+    private var reconnectAttempts = 0
+    private var isConnecting = false
+
     // For streaming audio chunks
     private var audioTempFile: File? = null
     private var audioOutputStream: FileOutputStream? = null
@@ -214,6 +222,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         speakButton.text = "TAP TO CANCEL"
         setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
 
+        // Keep trying to reach the server in the background so queued
+        // messages flush as soon as the link returns.
+        connectWebSocket()
+
         // If the user says nothing, fall back to wake-word mode after 15s
         dictationWatchdog?.let { statusText.removeCallbacks(it) }
         dictationWatchdog = Runnable {
@@ -287,6 +299,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             }
         }
 
+        // Keep trying to reach the server so the queue flushes
+        connectWebSocket()
+
         // Back to wake-word listening
         voskService?.stop()
         voskService = null
@@ -309,8 +324,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     // ------------------------------------------------------------------
 
     private fun connectWebSocket() {
-        if (isConnected) return
+        if (isConnected || isConnecting) return
 
+        isConnecting = true
         webSocket?.cancel()
 
         val request = Request.Builder()
@@ -320,6 +336,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 isConnected = true
+                isConnecting = false
+                reconnectAttempts = 0
+                stopReconnectLoop()
                 runOnUiThread {
                     setStatus("Connected to server", StatusRingView.State.CONNECTED)
                     pendingMessage?.let {
@@ -333,11 +352,18 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 isConnected = false
+                isConnecting = false
+                runOnUiThread { setStatus("Connection closed — reconnecting...", StatusRingView.State.IDLE) }
+                scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 isConnected = false
-                runOnUiThread { setStatus("WS Error: ${t.message}", StatusRingView.State.IDLE) }
+                isConnecting = false
+                runOnUiThread {
+                    setStatus("WS Error: ${t.message} — retrying...", StatusRingView.State.IDLE)
+                }
+                scheduleReconnect()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -382,6 +408,25 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 }
             }
         })
+    }
+
+    /** Exponential-ish reconnect: 2s, 4s, 8s... capped at 30s. */
+    private fun scheduleReconnect() {
+        if (reconnectRunnable != null) return // already scheduled
+        val delay = minOf(30000L, 2000L shl minOf(reconnectAttempts, 4))
+        reconnectAttempts++
+        val runnable = Runnable {
+            reconnectRunnable = null
+            connectWebSocket()
+        }
+        reconnectRunnable = runnable
+        reconnectHandler.postDelayed(runnable, delay)
+    }
+
+    private fun stopReconnectLoop() {
+        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
+        reconnectRunnable = null
+        reconnectAttempts = 0
     }
 
     // ------------------------------------------------------------------
@@ -725,6 +770,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopReconnectLoop()
         speechRecognizer.destroy()
         tts?.stop()
         tts?.shutdown()
