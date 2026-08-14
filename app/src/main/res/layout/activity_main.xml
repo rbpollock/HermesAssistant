@@ -5,7 +5,7 @@
     android:background="#0D0F14"
     android:orientation="vertical">
 
-    <!-- Top half: scrollable chat history -->
+    <!-- Top half: session chips + scrollable chat history -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -13,11 +13,39 @@
         android:orientation="vertical">
 
         <TextView
+            android:id="@+id/sessionLabel"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingStart="20dp"
+            android:paddingTop="12dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="4dp"
+            android:text="Sessions"
+            android:textColor="#8B93A7"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+
+        <HorizontalScrollView
+            android:id="@+id/sessionChipsScroll"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp">
+
+            <LinearLayout
+                android:id="@+id/sessionChipsRow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal" />
+        </HorizontalScrollView>
+
+        <TextView
             android:id="@+id/historyHeader"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingStart="20dp"
-            android:paddingTop="14dp"
+            android:paddingTop="12dp"
             android:paddingEnd="20dp"
             android:paddingBottom="8dp"
             android:text="Conversation"
@@ -44,98 +72,110 @@
         </ScrollView>
     </LinearLayout>
 
-    <!-- Bottom half: assistant panel -->
-    <LinearLayout
+    <!-- Bottom half: assistant panel. FrameLayout so the circular keyboard
+         icon can float at the top-right. -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:background="@drawable/panel_background"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="32dp">
+        android:background="@drawable/panel_background">
 
-        <com.example.hermesassistant.StatusRingView
-            android:id="@+id/statusRing"
-            android:layout_width="180dp"
-            android:layout_height="180dp"
-            android:contentDescription="Hermes status" />
-
-        <TextView
-            android:id="@+id/statusText"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="22dp"
-            android:ellipsize="end"
-            android:fontFamily="sans-serif-medium"
-            android:gravity="center"
-            android:maxLines="1"
-            android:text="Ready"
-            android:textColor="#E5E7EB"
-            android:textSize="19sp" />
-
-        <TextView
-            android:id="@+id/subText"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:gravity="center"
-            android:text="Tap to speak · wake word: &quot;Hey Hermes&quot;"
-            android:textColor="#8B93A7"
-            android:textSize="12sp" />
-
-        <Button
-            android:id="@+id/speakButton"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:layout_marginTop="20dp"
-            android:backgroundTint="#1E293B"
-            android:text="TAP TO SPEAK TO HERMES"
-            android:textColor="#E5E7EB"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <!-- Text input row: hidden by default, toggled by the type icon -->
         <LinearLayout
-            android:id="@+id/textInputRow"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:orientation="horizontal"
-            android:visibility="gone">
+            android:layout_height="match_parent"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:padding="32dp">
 
-            <EditText
-                android:id="@+id/textInput"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:background="@drawable/text_input_background"
-                android:hint="Type a message..."
-                android:imeOptions="actionSend"
-                android:inputType="text"
+            <com.example.hermesassistant.StatusRingView
+                android:id="@+id/statusRing"
+                android:layout_width="180dp"
+                android:layout_height="180dp"
+                android:contentDescription="Hermes status" />
+
+            <TextView
+                android:id="@+id/statusText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif-medium"
+                android:gravity="center"
                 android:maxLines="1"
-                android:paddingStart="16dp"
-                android:paddingEnd="16dp"
+                android:text="Ready"
                 android:textColor="#E5E7EB"
-                android:textColorHint="#8B93A7"
-                android:textSize="14sp" />
+                android:textSize="19sp" />
 
-            <ImageButton
-                android:id="@+id/sendButton"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="8dp"
+            <TextView
+                android:id="@+id/subText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center"
+                android:text="Tap to speak · wake word: &quot;Hey Hermes&quot;"
+                android:textColor="#8B93A7"
+                android:textSize="12sp" />
+
+            <Button
+                android:id="@+id/speakButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="16dp"
                 android:backgroundTint="#1E293B"
-                android:contentDescription="Send message"
-                android:src="@android:drawable/ic_menu_send" />
+                android:text="TAP TO SPEAK TO HERMES"
+                android:textColor="#E5E7EB"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <!-- Text input row: hidden by default, toggled only by the
+                 circular keyboard icon -->
+            <LinearLayout
+                android:id="@+id/textInputRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <EditText
+                    android:id="@+id/textInput"
+                    android:layout_width="0dp"
+                    android:layout_height="48dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/text_input_background"
+                    android:hint="Type a message..."
+                    android:imeOptions="actionSend"
+                    android:inputType="text"
+                    android:maxLines="1"
+                    android:paddingStart="16dp"
+                    android:paddingEnd="16dp"
+                    android:textColor="#E5E7EB"
+                    android:textColorHint="#8B93A7"
+                    android:textSize="14sp" />
+
+                <ImageButton
+                    android:id="@+id/sendButton"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="8dp"
+                    android:backgroundTint="#1E293B"
+                    android:contentDescription="Send message"
+                    android:src="@android:drawable/ic_menu_send" />
+            </LinearLayout>
         </LinearLayout>
 
+        <!-- Circular keyboard icon, top-right of the bottom section.
+             Sized to ~12% of screen width in code. -->
         <ImageButton
             android:id="@+id/typeToggleButton"
-            android:layout_width="44dp"
-            android:layout_height="44dp"
-            android:layout_marginTop="12dp"
-            android:backgroundTint="#1E293B"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="top|end"
+            android:layout_marginTop="16dp"
+            android:layout_marginEnd="16dp"
+            android:background="@drawable/circle_icon_background"
             android:contentDescription="Type a message"
+            android:padding="12dp"
             android:src="@android:drawable/ic_menu_edit" />
-    </LinearLayout>
+    </FrameLayout>
 </LinearLayout>

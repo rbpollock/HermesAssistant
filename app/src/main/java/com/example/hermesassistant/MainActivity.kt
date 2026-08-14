@@ -60,7 +60,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private lateinit var textInputRow: LinearLayout
     private lateinit var textInput: android.widget.EditText
     private lateinit var sendButton: android.widget.ImageButton
+    private lateinit var sessionChipsRow: LinearLayout
     private lateinit var notificationManager: NotificationManager
+    private lateinit var sessionStore: SessionStore
     private var tts: TextToSpeech? = null
     private lateinit var chatHistory: ChatHistoryStore
 
@@ -127,7 +129,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         textInputRow = findViewById(R.id.textInputRow)
         textInput = findViewById(R.id.textInput)
         sendButton = findViewById(R.id.sendButton)
+        sessionChipsRow = findViewById(R.id.sessionChipsRow)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
 
         createNotificationChannel()
@@ -143,6 +147,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         initVosk()
         renderHistory()
         updateQueueBadge()
+        renderSessionChips()
 
         speakButton.setOnClickListener {
             if (dictationMode) {
@@ -159,7 +164,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             }
         }
 
-        // Toggle the text input row (keyboard icon)
+        // Circular keyboard icon: ~12% of screen width, top-right of the
+        // bottom section. The soft keyboard ONLY shows when this icon is
+        // pressed — never on assistant activation.
+        val iconSize = (resources.displayMetrics.widthPixels * 0.12f).toInt()
+        typeToggleButton.layoutParams = typeToggleButton.layoutParams.apply { width = iconSize; height = iconSize }
         typeToggleButton.setOnClickListener {
             val showing = textInputRow.visibility == View.VISIBLE
             textInputRow.visibility = if (showing) View.GONE else View.VISIBLE
@@ -555,6 +564,16 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             replySessionId = sessionId
             replySessionTitle = title
             runOnUiThread { updateReplyBadge() }
+
+            // Track it in the session chip list
+            sessionStore.upsert(
+                KnownSession(
+                    id = sessionId,
+                    title = sessionTitleFromNotify(title, sessionId),
+                    host = host,
+                )
+            )
+            runOnUiThread { renderSessionChips() }
         }
 
         setStatus("$title\n$message", StatusRingView.State.CONNECTED)
@@ -583,6 +602,69 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             } else {
                 "Tap to speak · wake word: \"Hey Hermes\""
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Session chips — pick which session to talk to
+    // ------------------------------------------------------------------
+
+    /** Parse a friendly title out of a notify title (e.g. "Hermes finished · <title>"). */
+    private fun sessionTitleFromNotify(title: String, sessionId: String): String {
+        val idx = title.indexOf("·")
+        if (idx >= 0 && idx + 1 < title.length) {
+            val after = title.substring(idx + 1).trim()
+            if (after.isNotEmpty()) return after
+        }
+        // Fall back to a short id so the chip still means something
+        return if (sessionId.length > 12) "…${sessionId.takeLast(10)}" else sessionId
+    }
+
+    /** Render the horizontal session chips; the selected one is highlighted. */
+    private fun renderSessionChips() {
+        sessionChipsRow.removeAllViews()
+        if (sessionStore.sessions.isEmpty()) return
+
+        sessionStore.sessions.forEach { session ->
+            val isSelected = session.id == replySessionId
+            val chip = TextView(this).apply {
+                text = session.title
+                textSize = 12f
+                setTextColor(if (isSelected) 0xFF0B1220.toInt() else 0xFFE5E7EB.toInt())
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                isClickable = true
+                isFocusable = true
+                background = chipBackground(isSelected)
+                setOnClickListener {
+                    if (replySessionId == session.id) {
+                        // Tap again to untarget (back to default daily session)
+                        replySessionId = ""
+                        replySessionTitle = ""
+                    } else {
+                        replySessionId = session.id
+                        replySessionTitle = session.title
+                    }
+                    updateReplyBadge()
+                    renderSessionChips()
+                }
+            }
+            sessionChipsRow.addView(
+                chip,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = dp(8) }
+            )
+        }
+    }
+
+    private fun chipBackground(selected: Boolean) = GradientDrawable().apply {
+        cornerRadius = dp(16).toFloat()
+        if (selected) {
+            setColor(0xFF60A5FA.toInt())
+        } else {
+            setColor(0xFF1E293B.toInt())
+            setStroke(dp(1), 0xFF334155.toInt())
         }
     }
 
@@ -862,7 +944,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             if (replySessionId.isNotEmpty()) {
                 replySessionId = ""
                 replySessionTitle = ""
-                runOnUiThread { updateReplyBadge() }
+                runOnUiThread {
+                    updateReplyBadge()
+                    renderSessionChips()
+                }
             }
         } else {
             // Offline (or dropped mid-send): queue it persistently
