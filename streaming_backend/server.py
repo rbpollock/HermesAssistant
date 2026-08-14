@@ -16,6 +16,12 @@ VOICE = "en-US-AriaNeural"
 # (agent events from ANY running session on ANY host).
 connected_clients: Set[WebSocket] = set()
 
+# Pending notify events: if no phone is connected when an event fires
+# (app closed, screen off, WS dropped), buffer it here and flush it to
+# the phone on its next connection. Bounded to avoid unbounded growth.
+MAX_PENDING = 20
+pending_events: list = []
+
 
 class HermesEvent(BaseModel):
     hook_event_name: str = ""
@@ -60,6 +66,11 @@ async def hermes_event(event: HermesEvent):
         "host": (event.extra or {}).get("host", ""),
     }
 
+    # Always buffer first so nothing is lost when the phone is away.
+    pending_events.append(payload)
+    if len(pending_events) > MAX_PENDING:
+        pending_events.pop(0)
+
     stale = []
     for ws in connected_clients:
         try:
@@ -70,7 +81,19 @@ async def hermes_event(event: HermesEvent):
         connected_clients.discard(ws)
 
     print(f"📣 Relayed {kind} event to {len(connected_clients)} phone(s): {title}")
-    return {"ok": True, "relayed": len(connected_clients)}
+    return {"ok": True, "relayed": len(connected_clients), "pending": len(pending_events)}
+
+
+async def flush_pending(websocket: WebSocket) -> None:
+    """Push any buffered events to a newly connected phone."""
+    while pending_events:
+        payload = pending_events.pop(0)
+        try:
+            await websocket.send_json(payload)
+        except Exception:
+            # Connection broke mid-flush — put it back
+            pending_events.insert(0, payload)
+            break
 
 
 @app.websocket("/chat/stream")
@@ -78,6 +101,9 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     connected_clients.add(websocket)
     print(f"🔌 Phone connected ({len(connected_clients)} total)")
+
+    # Deliver anything buffered while the phone was away
+    await flush_pending(websocket)
 
     today = datetime.datetime.now().strftime("%Y_%m_%d")
     session_name = f"android_{today}"
