@@ -815,7 +815,12 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun setStatus(text: String, state: StatusRingView.State) {
-        statusText.text = text
+        // Status line is single-line (maxLines=1 + ellipsize). Collapse
+        // newlines so multi-line payloads (notify title+message, long
+        // Hermes replies) render as one clean line instead of pushing the
+        // speak button off the half-screen panel. Full text is in history.
+        val oneLine = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
+        statusText.text = oneLine
         statusRing.state = state
     }
 
