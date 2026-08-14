@@ -56,6 +56,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private lateinit var statusRing: StatusRingView
     private lateinit var historyList: LinearLayout
     private lateinit var historyScroll: ScrollView
+    private lateinit var typeToggleButton: android.widget.ImageButton
+    private lateinit var textInputRow: LinearLayout
+    private lateinit var textInput: android.widget.EditText
+    private lateinit var sendButton: android.widget.ImageButton
     private lateinit var notificationManager: NotificationManager
     private var tts: TextToSpeech? = null
     private lateinit var chatHistory: ChatHistoryStore
@@ -119,6 +123,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         statusRing = findViewById(R.id.statusRing)
         historyList = findViewById(R.id.historyList)
         historyScroll = findViewById(R.id.historyScroll)
+        typeToggleButton = findViewById(R.id.typeToggleButton)
+        textInputRow = findViewById(R.id.textInputRow)
+        textInput = findViewById(R.id.textInput)
+        sendButton = findViewById(R.id.sendButton)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         chatHistory = ChatHistoryStore(this)
 
@@ -148,6 +156,38 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 playPendingAudio()
             } else {
                 startListening()
+            }
+        }
+
+        // Toggle the text input row (keyboard icon)
+        typeToggleButton.setOnClickListener {
+            val showing = textInputRow.visibility == View.VISIBLE
+            textInputRow.visibility = if (showing) View.GONE else View.VISIBLE
+            if (!showing) {
+                textInput.requestFocus()
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.showSoftInput(textInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            } else {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.hideSoftInputFromWindow(textInput.windowToken, 0)
+            }
+        }
+
+        // Send typed text (both the send icon and the IME action)
+        val sendAction = {
+            val text = textInput.text?.toString().orEmpty()
+            if (text.isNotBlank()) {
+                textInput.text?.clear()
+                sendUserMessage(text)
+            }
+        }
+        sendButton.setOnClickListener { sendAction() }
+        textInput.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
+                sendAction()
+                true
+            } else {
+                false
             }
         }
 
@@ -784,36 +824,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             override fun onResults(results: Bundle?) {
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
-                    val userText = matches[0]
-                    chatHistory.append(ChatMessage("user", userText))
-                    renderHistory()
-                    setStatus("You: $userText", StatusRingView.State.THINKING)
-
-                    // If a targeted reply is armed (a notify arrived with a
-                    // session_id), wrap the message so the server routes it
-                    // to that specific Hermes session.
-                    val payload = if (replySessionId.isNotEmpty()) {
-                        "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
-                    } else {
-                        userText
-                    }
-
-                    if (isConnected && webSocket?.send(payload) == true) {
-                        // Sent successfully — clear the targeted reply
-                        if (replySessionId.isNotEmpty()) {
-                            replySessionId = ""
-                            replySessionTitle = ""
-                            runOnUiThread { updateReplyBadge() }
-                        }
-                    } else {
-                        // Offline (or dropped mid-send): queue it persistently
-                        isConnected = false
-                        setStatus("Offline — message queued", StatusRingView.State.IDLE)
-                        chatHistory.enqueue(userText)
-                        renderHistory()
-                        updateQueueBadge()
-                        connectWebSocket()
-                    }
+                    sendUserMessage(matches[0])
                 } else {
                     // Nothing recognized — back to wake word
                     startVoskWakeWord()
@@ -822,6 +833,46 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
+    }
+
+    /**
+     * Shared send path for both voice and typed text.
+     * Routes to the targeted reply session when armed, otherwise the
+     * daily android session; queues persistently when offline.
+     */
+    private fun sendUserMessage(rawText: String) {
+        val userText = rawText.trim()
+        if (userText.isEmpty()) return
+
+        chatHistory.append(ChatMessage("user", userText))
+        renderHistory()
+        setStatus("You: $userText", StatusRingView.State.THINKING)
+
+        // If a targeted reply is armed (a notify arrived with a
+        // session_id), wrap the message so the server routes it to that
+        // specific Hermes session.
+        val payload = if (replySessionId.isNotEmpty()) {
+            "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
+        } else {
+            userText
+        }
+
+        if (isConnected && webSocket?.send(payload) == true) {
+            // Sent successfully — clear the targeted reply
+            if (replySessionId.isNotEmpty()) {
+                replySessionId = ""
+                replySessionTitle = ""
+                runOnUiThread { updateReplyBadge() }
+            }
+        } else {
+            // Offline (or dropped mid-send): queue it persistently
+            isConnected = false
+            setStatus("Offline — message queued", StatusRingView.State.IDLE)
+            chatHistory.enqueue(userText)
+            renderHistory()
+            updateQueueBadge()
+            connectWebSocket()
+        }
     }
 
     private fun sendToHermes(text: String) {

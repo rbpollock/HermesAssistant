@@ -93,5 +93,49 @@
             android:textColor="#E5E7EB"
             android:textSize="14sp"
             android:textStyle="bold" />
+
+        <!-- Text input row: hidden by default, toggled by the type icon -->
+        <LinearLayout
+            android:id="@+id/textInputRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/textInput"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@drawable/text_input_background"
+                android:hint="Type a message..."
+                android:imeOptions="actionSend"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="#E5E7EB"
+                android:textColorHint="#8B93A7"
+                android:textSize="14sp" />
+
+            <ImageButton
+                android:id="@+id/sendButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:backgroundTint="#1E293B"
+                android:contentDescription="Send message"
+                android:src="@android:drawable/ic_menu_send" />
+        </LinearLayout>
+
+        <ImageButton
+            android:id="@+id/typeToggleButton"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:layout_marginTop="12dp"
+            android:backgroundTint="#1E293B"
+            android:contentDescription="Type a message"
+            android:src="@android:drawable/ic_menu_edit" />
     </LinearLayout>
 </LinearLayout>
