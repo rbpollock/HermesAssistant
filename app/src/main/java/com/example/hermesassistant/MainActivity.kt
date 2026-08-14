@@ -183,23 +183,29 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
-                // So the unified playback queue knows when a spoken alert
-                // actually finished, and can start the next item.
-                tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-                    override fun onStart(utteranceId: String?) {}
-                    override fun onDone(utteranceId: String?) {
-                        runOnUiThread { onPlaybackItemDone() }
-                    }
-                    @Deprecated("Deprecated in Java")
-                    override fun onError(utteranceId: String?) {
-                        runOnUiThread { onPlaybackItemDone() }
-                    }
-                    override fun onError(utteranceId: String?, errorCode: Int) {
-                        runOnUiThread { onPlaybackItemDone() }
-                    }
-                })
             }
         }
+        // Register the progress listener immediately (valid before init
+        // completes; re-registered in the callback too). onDone drives the
+        // unified playback queue, so without this a TTS alert could stall
+        // every later audio item forever.
+        registerTtsListener()
+    }
+
+    private fun registerTtsListener() {
+        tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) {
+                runOnUiThread { onPlaybackItemDone() }
+            }
+            @Deprecated("Deprecated in Java")
+            override fun onError(utteranceId: String?) {
+                runOnUiThread { onPlaybackItemDone() }
+            }
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                runOnUiThread { onPlaybackItemDone() }
+            }
+        })
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -574,6 +580,32 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
     private val playbackQueue = ArrayDeque<PlaybackItem>()
     private var isSpeaking = false
+    // Guards onPlaybackItemDone against double-firing (some TTS engines
+    // fire both onError and onDone for one utterance; a stale callback
+    // must not skip the next queued item).
+    private var playbackItemInFlight = false
+
+    // Watchdog: if an item doesn't finish within this long (TTS onDone
+    // not fired, MediaPlayer error, etc.), force-advance so the queue can
+    // never jam permanently with isSpeaking=true.
+    private val playbackWatchdog = android.os.Handler(android.os.Looper.getMainLooper())
+    private var playbackWatchdogRunnable: Runnable? = null
+    private val PLAYBACK_WATCHDOG_MS = 20000L
+
+    private fun armPlaybackWatchdog() {
+        playbackWatchdogRunnable?.let { playbackWatchdog.removeCallbacks(it) }
+        val r = Runnable {
+            // Timed out — assume the item is stuck and move on
+            runOnUiThread { onPlaybackItemDone() }
+        }
+        playbackWatchdogRunnable = r
+        playbackWatchdog.postDelayed(r, PLAYBACK_WATCHDOG_MS)
+    }
+
+    private fun disarmPlaybackWatchdog() {
+        playbackWatchdogRunnable?.let { playbackWatchdog.removeCallbacks(it) }
+        playbackWatchdogRunnable = null
+    }
 
     private fun enqueuePlayback(item: PlaybackItem) {
         playbackQueue.addLast(item)
@@ -584,32 +616,53 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val item = playbackQueue.removeFirstOrNull()
         if (item == null) {
             isSpeaking = false
+            disarmPlaybackWatchdog()
             // Feature 1: after the response finishes playing, automatically listen again
             scheduleAutoListen()
             return
         }
         isSpeaking = true
         setStatus("Speaking...", StatusRingView.State.SPEAKING)
+        playbackItemInFlight = true
 
         val file = item.audioFile
         val text = item.spokenText
         when {
             file != null -> {
-                // Server-generated response audio
-                mediaPlayer?.release()
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(file.absolutePath)
-                    setOnCompletionListener { runOnUiThread { onPlaybackItemDone() } }
-                    setOnErrorListener { _, _, _ -> runOnUiThread { onPlaybackItemDone() }; true }
-                    prepare()
-                    start()
+                // Server-generated response audio. MediaPlayer has reliable
+                // onCompletion/onError callbacks, so no watchdog needed here
+                // (a long response may legitimately play for 30-60s).
+                try {
+                    mediaPlayer?.release()
+                    mediaPlayer = MediaPlayer().apply {
+                        setDataSource(file.absolutePath)
+                        setOnCompletionListener { runOnUiThread { onPlaybackItemDone() } }
+                        setOnErrorListener { _, _, _ -> runOnUiThread { onPlaybackItemDone() }; true }
+                        prepare()
+                        start()
+                    }
+                } catch (e: Exception) {
+                    // Bad/empty file — skip it, keep the queue moving
+                    runOnUiThread { onPlaybackItemDone() }
                 }
             }
             text != null -> {
-                // Notify alert via TTS; onDone() fires the next item
-                val result = tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "notify")
-                if (tts == null || result == TextToSpeech.ERROR) {
+                // Notify alert via TTS; onDone() fires the next item. If TTS
+                // isn't ready or speak fails, don't block the queue. The
+                // watchdog guards against onDone never firing (a known
+                // Samsung TTS quirk) which would otherwise jam the queue.
+                if (tts == null) {
                     onPlaybackItemDone()
+                } else {
+                    armPlaybackWatchdog()
+                    val result = try {
+                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "notify") ?: TextToSpeech.ERROR
+                    } catch (e: Exception) {
+                        TextToSpeech.ERROR
+                    }
+                    if (result == TextToSpeech.ERROR) {
+                        onPlaybackItemDone()
+                    }
                 }
             }
             else -> onPlaybackItemDone()
@@ -617,6 +670,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     private fun onPlaybackItemDone() {
+        if (!playbackItemInFlight) return // stale callback — ignore
+        playbackItemInFlight = false
+        disarmPlaybackWatchdog()
         mediaPlayer?.release()
         mediaPlayer = null
         startNextPlayback()
