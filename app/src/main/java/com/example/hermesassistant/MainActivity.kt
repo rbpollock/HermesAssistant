@@ -771,8 +771,18 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             )
         }
 
-        // Scroll to the end so the newest chip is visible in the band
-        sessionChipsScroll.post { sessionChipsScroll.fullScroll(View.FOCUS_RIGHT) }
+        // Scroll the band so the SELECTED chip is visible (centered if it
+        // fits); if nothing is selected, show the newest chip at the end.
+        val selIndex = sessionStore.sessions.indexOfFirst { it.id == replySessionId }
+        sessionChipsScroll.post {
+            if (selIndex >= 0) {
+                val chipView = sessionChipsRow.getChildAt(selIndex) ?: return@post
+                val target = (chipView.left - (sessionChipsScroll.width - chipView.width) / 2).coerceAtLeast(0)
+                sessionChipsScroll.smoothScrollTo(target, 0)
+            } else {
+                sessionChipsScroll.fullScroll(View.FOCUS_RIGHT)
+            }
+        }
     }
 
     private fun chipBackground(selected: Boolean) = GradientDrawable().apply {
@@ -827,7 +837,13 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         // to that session (works even if the app process is not running).
         val replyIntent = Intent(this, NotificationReplyReceiver::class.java).apply {
             putExtra(NotificationReplyReceiver.EXTRA_SESSION_ID, sessionId)
-            putExtra(NotificationReplyReceiver.EXTRA_SESSION_TITLE, title)
+            // Parsed session title (e.g. "Solar Trivia") — not the raw
+            // "Hermes finished · <title>" — so follow-up notifications can
+            // display a clean "Session: <title>" subtext.
+            putExtra(
+                NotificationReplyReceiver.EXTRA_SESSION_TITLE,
+                if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else ""
+            )
             putExtra(NotificationReplyReceiver.EXTRA_NOTIFY_TITLE, title)
         }
         val replyPendingIntent = PendingIntent.getBroadcast(

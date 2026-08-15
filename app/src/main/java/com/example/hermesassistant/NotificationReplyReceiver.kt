@@ -46,7 +46,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             .orEmpty()
 
         if (text.isEmpty()) {
-            notifyReply(context, "Reply not sent", "Empty message", sessionId)
+            notifyReply(context, "Reply not sent", "Empty message", sessionId, sessionTitle)
             return
         }
 
@@ -70,20 +70,20 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                     val json = JSONObject(respBody)
                     if (response.isSuccessful && json.optBoolean("ok", false)) {
                         val reply = json.optString("reply", "")
-                        notifyReply(context, "Hermes replied", reply, sessionId)
+                        notifyReply(context, "Hermes replied", reply, sessionId, sessionTitle)
                     } else {
-                        notifyReply(context, "Reply not sent", json.optString("error", "server error"), sessionId)
+                        notifyReply(context, "Reply not sent", json.optString("error", "server error"), sessionId, sessionTitle)
                     }
                 }
             } catch (e: Exception) {
-                notifyReply(context, "Reply not sent", "Network error: ${e.message}", sessionId)
+                notifyReply(context, "Reply not sent", "Network error: ${e.message}", sessionId, sessionTitle)
             } finally {
                 pendingResult.finish()
             }
         }.start()
     }
 
-    private fun notifyReply(context: Context, title: String, message: String, sessionId: String) {
+    private fun notifyReply(context: Context, title: String, message: String, sessionId: String, sessionTitle: String = "") {
         ensureChannel(context)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -105,16 +105,45 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(context, REPLY_CHANNEL)
+        // Follow-up "Reply" action: keep the conversation going with the
+        // SAME session, straight from the shade. FLAG_MUTABLE is required
+        // for actions with RemoteInput on Android 12+.
+        val followUpReplyIntent = Intent(context, NotificationReplyReceiver::class.java).apply {
+            putExtra(EXTRA_SESSION_ID, sessionId)
+            putExtra(EXTRA_SESSION_TITLE, sessionTitle)
+            putExtra(EXTRA_NOTIFY_TITLE, title)
+        }
+        val followUpReplyPi = PendingIntent.getBroadcast(
+            context,
+            notifId + 300,
+            followUpReplyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        )
+        val followUpReplyAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_send,
+            "Reply",
+            followUpReplyPi
+        ).addRemoteInput(
+            RemoteInput.Builder(KEY_TEXT_REPLY).setLabel("Reply to Hermes").build()
+        ).build()
+
+        val builder = NotificationCompat.Builder(context, REPLY_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setAutoCancel(true)
             .setContentIntent(pi)
-            .build()
+            .addAction(followUpReplyAction)
 
-        manager.notify(notifId, notification)
+        // Indicate which session this reply belongs to.
+        if (sessionTitle.isNotEmpty()) {
+            builder.setSubText("Session: $sessionTitle")
+        } else if (sessionId.isNotEmpty()) {
+            builder.setSubText("Session: $sessionId")
+        }
+
+        manager.notify(notifId, builder.build())
     }
 
     private fun ensureChannel(context: Context) {
