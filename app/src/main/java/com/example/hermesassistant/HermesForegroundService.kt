@@ -212,7 +212,10 @@ class HermesForegroundService : Service(), RecognitionListener {
                 }
             },
             { exception ->
-                updateNotification("Failed to load wake word model")
+                // Show the REAL reason (e.g. missing assets/model/uuid used
+                // to make unpack throw FileNotFoundException) instead of a
+                // blanket label.
+                updateNotification("Wake word model failed: ${exception.message?.take(80)}")
             }
         )
     }
