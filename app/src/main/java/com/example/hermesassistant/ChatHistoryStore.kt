@@ -9,12 +9,17 @@ import java.io.File
  * A single chat entry. role: "user" | "hermes" | "notify".
  * queued=true means the user message is sitting in the offline
  * queue, not yet delivered to the server.
+ * sessionId/sessionTitle identify which Hermes session the message
+ * belongs to ("" = the phone's default daily session). Used to select
+ * the matching session chip when the message is tapped.
  */
 data class ChatMessage(
     val role: String,
     val text: String,
     val ts: Long = System.currentTimeMillis(),
     val queued: Boolean = false,
+    val sessionId: String = "",
+    val sessionTitle: String = "",
 )
 
 /**
@@ -92,6 +97,8 @@ class ChatHistoryStore(context: Context) {
                     text = o.optString("text", ""),
                     ts = o.optLong("ts", System.currentTimeMillis()),
                     queued = o.optBoolean("queued", false),
+                    sessionId = o.optString("sessionId", ""),
+                    sessionTitle = o.optString("sessionTitle", ""),
                 )
             }
         } catch (e: Exception) {
@@ -108,6 +115,8 @@ class ChatHistoryStore(context: Context) {
                     put("text", m.text)
                     put("ts", m.ts)
                     put("queued", m.queued)
+                    put("sessionId", m.sessionId)
+                    put("sessionTitle", m.sessionTitle)
                 })
             }
             file.writeText(arr.toString())

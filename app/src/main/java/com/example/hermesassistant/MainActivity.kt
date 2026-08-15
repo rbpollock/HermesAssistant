@@ -112,6 +112,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private var replySessionId: String = ""
     private var replySessionTitle: String = ""
 
+    // The session the current exchange belongs to — used to tag the
+    // hermes reply bubble with the same session as the user message.
+    private var activeSessionId: String = ""
+    private var activeSessionTitle: String = ""
+
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
         private const val REQ_POST_NOTIFICATIONS = 2
@@ -494,7 +499,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                         when (type) {
                             "text" -> {
                                 setStatus("Hermes: ${json.optString("message")}", StatusRingView.State.CONNECTED)
-                                chatHistory.append(ChatMessage("hermes", json.optString("message")))
+                                chatHistory.append(
+                                    ChatMessage(
+                                        "hermes",
+                                        json.optString("message"),
+                                        sessionId = activeSessionId,
+                                        sessionTitle = activeSessionTitle,
+                                    )
+                                )
                                 renderHistory()
                             }
                             "status" -> {
@@ -613,7 +625,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
 
         setStatus("$title\n$message", StatusRingView.State.CONNECTED)
-        chatHistory.append(ChatMessage("notify", "$title — $message"))
+        chatHistory.append(
+            ChatMessage(
+                "notify",
+                "$title — $message",
+                sessionId = sessionId,
+                sessionTitle = if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else "",
+            )
+        )
         renderHistory()
 
         val urgent = kind == "question" || kind == "approval"
@@ -1008,7 +1027,16 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val userText = rawText.trim()
         if (userText.isEmpty()) return
 
-        chatHistory.append(ChatMessage("user", userText))
+        // The message belongs to whichever session is currently targeted
+        // (replySessionId may be cleared after a successful send, so
+        // capture it first). Used to tag both the user bubble and the
+        // hermes reply bubble with the same session.
+        activeSessionId = replySessionId
+        activeSessionTitle = replySessionTitle
+
+        chatHistory.append(
+            ChatMessage("user", userText, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
+        )
         renderHistory()
         setStatus("You: $userText", StatusRingView.State.THINKING)
 
@@ -1065,7 +1093,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 val responseText = response.header("X-Response-Text", "Audio received") ?: "Audio received"
                 runOnUiThread {
                     setStatus("Hermes: $responseText", StatusRingView.State.CONNECTED)
-                    chatHistory.append(ChatMessage("hermes", responseText))
+                    chatHistory.append(
+                        ChatMessage(
+                            "hermes",
+                            responseText,
+                            sessionId = activeSessionId,
+                            sessionTitle = activeSessionTitle,
+                        )
+                    )
                     renderHistory()
                 }
 
@@ -1103,7 +1138,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             setTextColor(0xFFE5E7EB.toInt())
             setPadding(dp(14), dp(10), dp(14), dp(10))
             maxWidth = bubbleMaxWidth
-            isClickable = false
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                selectSessionFromMessage(m)
+            }
         }
 
         val bg = GradientDrawable().apply {
@@ -1133,6 +1172,30 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
         tv.background = bg
         historyList.addView(tv, lp)
+    }
+
+    /**
+     * Tapping a message targets the session it belongs to: the matching
+     * chip gets selected and the reply badge arms. Messages with no
+     * session (the phone's own daily chat) clear the target back to
+     * default.
+     */
+    private fun selectSessionFromMessage(m: ChatMessage) {
+        val targetId = m.sessionId
+        if (targetId.isNotEmpty()) {
+            val targetTitle = m.sessionTitle.ifEmpty { "…${targetId.takeLast(10)}" }
+            // Make sure the chip exists (may have arrived via a different path)
+            sessionStore.upsert(KnownSession(id = targetId, title = targetTitle))
+            replySessionId = targetId
+            replySessionTitle = targetTitle
+            setStatus("Replying to: $targetTitle", StatusRingView.State.CONNECTED)
+        } else {
+            replySessionId = ""
+            replySessionTitle = ""
+            setStatus("Reply target cleared — daily phone chat", StatusRingView.State.CONNECTED)
+        }
+        updateReplyBadge()
+        renderSessionChips()
     }
 
     private fun updateQueueBadge() {
