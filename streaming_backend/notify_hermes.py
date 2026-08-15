@@ -135,15 +135,18 @@ def main() -> None:
 
     # Feature: attach the actual response text and session title for
     # session-end events so the phone notification has context, not just
-    # a session id.
+    # a session id. Cap generously (4000 chars): enough for any normal
+    # Hermes reply without dumping a giant transcript into the phone's
+    # notification. (The app and relay never truncate — this is the only
+    # place a message can get cut, so keep it generous.)
     if event == "on_session_end":
         session_id = payload.get("session_id") or ""
         text = _last_assistant_text(session_id)
         if text:
-            payload["extra"]["response_text"] = text[:500]
+            payload["extra"]["response_text"] = text[:4000]
         title = _session_title(session_id)
         if title:
-            payload["extra"]["session_title"] = title[:120]
+            payload["extra"]["session_title"] = title[:200]
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
