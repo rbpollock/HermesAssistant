@@ -2,6 +2,10 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Single source of truth for the app version. Bump here on each release;
+// it feeds both the Android versionName and the built APK filename.
+val appVersionName = "1.6.16"
+
 android {
     namespace = "com.example.hermesassistant"
     compileSdk {
@@ -14,8 +18,8 @@ android {
         applicationId = "com.example.hermesassistant"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 16
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -30,6 +34,17 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+}
+
+// Name the built APK HermesAssistant-v{versionName}.apk instead of the
+// generic app-debug.apk / app-release.apk, so the file that lands on the
+// phone (and in GitHub releases) carries its version.
+androidComponents {
+    onVariants(selector().all()) { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set("HermesAssistant-v$appVersionName.apk")
+        }
     }
 }
 
