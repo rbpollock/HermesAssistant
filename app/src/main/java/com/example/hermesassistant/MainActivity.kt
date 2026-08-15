@@ -834,7 +834,15 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             this,
             notifId + 200,
             replyIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            // FLAG_MUTABLE is REQUIRED for actions with RemoteInput on
+            // Android 12+: the system must be able to inject the typed
+            // reply text into the PendingIntent. With FLAG_IMMUTABLE,
+            // NotificationManager.notify() throws IllegalArgumentException
+            // ("PendingIntents attached to actions with remote inputs must
+            // be mutable") and the notification is never posted. The intent
+            // is explicit to our non-exported receiver, so mutability is
+            // safe here.
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
         )
         val remoteInput = RemoteInput.Builder(NotificationReplyReceiver.KEY_TEXT_REPLY)
             .setLabel("Reply to Hermes")
