@@ -145,6 +145,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         chatHistory = ChatHistoryStore(this)
 
         createNotificationChannel()
+        startHermesForegroundService()
         initTts()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -305,6 +306,20 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS)
+        }
+    }
+
+    /** Start the foreground service that keeps the app alive in the background. */
+    private fun startHermesForegroundService() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(Intent(this, HermesForegroundService::class.java))
+            } else {
+                startService(Intent(this, HermesForegroundService::class.java))
+            }
+        } catch (e: Exception) {
+            // e.g. BackgroundServiceStartNotAllowedException — app not
+            // in a state to start it right now; will start next launch.
         }
     }
 
