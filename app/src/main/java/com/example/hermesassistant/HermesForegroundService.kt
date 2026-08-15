@@ -22,7 +22,11 @@ class HermesForegroundService : Service() {
 
     companion object {
         const val CHANNEL_ID = "hermes_service"
+        // Foreground-service notification ID + PendingIntent request code.
+        // Kept in a reserved range so session notify/reply notifications
+        // (IDs 100+ / 200+) never collide with it.
         const val NOTIFICATION_ID = 1
+        const val REQUEST_CODE = 100000
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -51,7 +55,7 @@ class HermesForegroundService : Service() {
         }
         val pi = PendingIntent.getActivity(
             this,
-            0,
+            REQUEST_CODE,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

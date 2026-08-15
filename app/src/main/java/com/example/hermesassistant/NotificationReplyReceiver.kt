@@ -87,8 +87,10 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         ensureChannel(context)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
-        // Non-negative IDs only (negative IDs get dropped by some OEMs)
-        val notifId = (sessionId.hashCode() and 0x7fffffff) + 1
+        // Non-negative IDs only (negative IDs get dropped by some OEMs).
+        // Shift into 200+ so reply notifications never collide with the
+        // foreground service (ID 1) or the session notify (100+).
+        val notifId = (sessionId.hashCode() and 0x7fffffff) % 1000000 + 200
 
         // Tapping the follow-up opens the app at the same session chip
         val openIntent = Intent(context, MainActivity::class.java).apply {
@@ -98,7 +100,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         }
         val pi = PendingIntent.getActivity(
             context,
-            notifId,
+            notifId + 200,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )

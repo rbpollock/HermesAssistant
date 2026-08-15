@@ -565,7 +565,12 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                             }
                         }
                     } catch (e: Exception) {
-                        setStatus("Error parsing: ${e.message}", StatusRingView.State.CONNECTED)
+                        // Non-JSON frame. Show a short diagnostic and keep the
+                        // raw text in history so we can see exactly what arrived.
+                        val raw = text.take(200)
+                        chatHistory.append(ChatMessage("notify", "⚠ Non-JSON frame: $raw"))
+                        renderHistory()
+                        setStatus("Unexpected data from server", StatusRingView.State.CONNECTED)
                     }
                 }
             }
@@ -787,8 +792,10 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
         // sessionId.hashCode() can be negative; Samsung silently drops
         // notifications with negative IDs. Mask the sign bit so IDs are
-        // always in the non-negative range.
-        val notifId = sessionId.hashCode() and 0x7fffffff
+        // always in the non-negative range, and shift into 100+ so they
+        // never collide with the foreground service (ID 1) or the reply
+        // notifications (200+).
+        val notifId = (sessionId.hashCode() and 0x7fffffff) % 1000000 + 100
 
         // Tapping the notification opens the app and selects the session
         // chip for the session that produced this notification.
@@ -800,7 +807,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
-            notifId,
+            notifId + 100,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -814,7 +821,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
         val replyPendingIntent = PendingIntent.getBroadcast(
             this,
-            notifId + 2,
+            notifId + 200,
             replyIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
