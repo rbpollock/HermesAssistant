@@ -657,6 +657,13 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val host = json.optString("host", "")
         val sessionId = json.optString("session_id", "")
 
+        // De-dupe: if this exact event was already shown within the last
+        // few seconds (e.g. a reconnect flushed the same payload twice),
+        // skip the system notification + TTS alert. History and status
+        // still update, so nothing looks lost — the user just isn't
+        // spammed by the same "Hermes finished" twice.
+        val isDuplicate = isDuplicateNotify(kind, title, message, sessionId)
+
         // Remember which session this came from so the next spoken message
         // can be routed back to it (answering a clarify prompt, etc.).
         if (sessionId.isNotEmpty()) {
@@ -687,22 +694,41 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         renderHistory()
 
         val urgent = kind == "question" || kind == "approval"
-        try {
-            showSystemNotification(title, message, host, urgent, sessionId)
-        } catch (e: Exception) {
-            // A notification failure must not kill the message pipeline;
-            // log it so it's visible instead of being misreported as a
-            // parse error by the WS handler's catch-all.
-            chatHistory.append(ChatMessage("notify", "⚠ notify error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"))
-            renderHistory()
-        }
+        if (!isDuplicate) {
+            try {
+                showSystemNotification(title, message, host, urgent, sessionId)
+            } catch (e: Exception) {
+                // A notification failure must not kill the message pipeline;
+                // log it so it's visible instead of being misreported as a
+                // parse error by the WS handler's catch-all.
+                chatHistory.append(ChatMessage("notify", "⚠ notify error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"))
+                renderHistory()
+            }
 
-        // Speak the alert aloud ONLY when a Bluetooth device is connected,
-        // and route it through the playback queue so it never talks over
-        // response audio that's already playing.
-        if (isBluetoothConnected()) {
-            enqueuePlayback(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
+            // Speak the alert aloud ONLY when a Bluetooth device is connected,
+            // and route it through the playback queue so it never talks over
+            // response audio that's already playing.
+            if (isBluetoothConnected()) {
+                enqueuePlayback(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
+            }
         }
+    }
+
+    /** Short-window dedupe for identical notify events (reconnect replay). */
+    private val recentNotifyFingerprints = ArrayDeque<Pair<Long, String>>()
+    private fun isDuplicateNotify(kind: String, title: String, message: String, sessionId: String): Boolean {
+        val now = System.currentTimeMillis()
+        val windowMs = 10_000L
+        // Drop entries older than the window
+        while (recentNotifyFingerprints.isNotEmpty() &&
+            now - recentNotifyFingerprints.first().first > windowMs
+        ) {
+            recentNotifyFingerprints.removeFirst()
+        }
+        val fingerprint = "$kind\u0001$title\u0001$message\u0001$sessionId"
+        val dup = recentNotifyFingerprints.any { it.second == fingerprint }
+        if (!dup) recentNotifyFingerprints.addLast(now to fingerprint)
+        return dup
     }
 
     /** Show a "reply to <session>" hint when a targeted reply is armed. */

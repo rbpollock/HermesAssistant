@@ -153,12 +153,16 @@ async def hermes_event(event: HermesEvent):
         "host": (event.extra or {}).get("host", ""),
     }
 
-    # Always buffer first so nothing is lost when the phone is away.
-    pending_events.append(payload)
-    if len(pending_events) > MAX_PENDING:
-        pending_events.pop(0)
-
     relayed = await send_to_phone(payload)
+
+    # Buffer ONLY events that no phone received. If at least one phone got
+    # it live, don't keep a copy — otherwise the next reconnect's
+    # flush_pending would re-deliver an event the user already saw
+    # (duplicate notifications, worse with flapping connections).
+    if relayed == 0:
+        pending_events.append(payload)
+        if len(pending_events) > MAX_PENDING:
+            pending_events.pop(0)
 
     print(f"📣 Relayed {kind} event to {relayed} phone(s): {title}")
     return {"ok": True, "relayed": relayed, "pending": len(pending_events)}
