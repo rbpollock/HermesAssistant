@@ -88,6 +88,9 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         ensureChannel(context)
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        // Non-negative IDs only (negative IDs get dropped by some OEMs)
+        val notifId = (sessionId.hashCode() and 0x7fffffff) + 1
+
         // Tapping the follow-up opens the app at the same session chip
         val openIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -96,7 +99,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         }
         val pi = PendingIntent.getActivity(
             context,
-            sessionId.hashCode() + 1,
+            notifId,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -110,7 +113,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             .setContentIntent(pi)
             .build()
 
-        manager.notify(sessionId.hashCode() + 1, notification)
+        manager.notify(notifId, notification)
     }
 
     private fun ensureChannel(context: Context) {

@@ -730,8 +730,15 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
+            // Don't fail silently — tell the user where to fix it
+            setStatus("Notifications blocked — enable in app settings", StatusRingView.State.CONNECTED)
             return
         }
+
+        // sessionId.hashCode() can be negative; Samsung silently drops
+        // notifications with negative IDs. Mask the sign bit so IDs are
+        // always in the non-negative range.
+        val notifId = sessionId.hashCode() and 0x7fffffff
 
         // Tapping the notification opens the app and selects the session
         // chip for the session that produced this notification.
@@ -743,7 +750,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
-            sessionId.hashCode(),
+            notifId,
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
@@ -757,7 +764,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
         val replyPendingIntent = PendingIntent.getBroadcast(
             this,
-            sessionId.hashCode() + 2,
+            notifId + 2,
             replyIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
