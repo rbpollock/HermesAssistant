@@ -3,6 +3,7 @@ package com.example.hermesassistant
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothProfile
 import android.content.Context
@@ -111,7 +112,6 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
-        private const val NOTIFICATION_ID = 42
         private const val REQ_POST_NOTIFICATIONS = 2
     }
 
@@ -206,6 +206,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         if (isVoiceInvocation(intent?.action)) {
             if (isConnected) startListening() else startOfflineDictation()
         }
+
+        // Notification tap: select the session chip for that notification
+        handleTargetSessionIntent(intent)
     }
 
     /** True when the intent asks us to act as the voice assistant. */
@@ -213,6 +216,36 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         return action == Intent.ACTION_ASSIST
             || action == Intent.ACTION_VOICE_COMMAND
             || action == "com.example.hermesassistant.START_LISTENING"
+    }
+
+    /**
+     * If launched by tapping a notification, arm the reply target for the
+     * session that produced it and highlight its chip.
+     */
+    private fun handleTargetSessionIntent(intent: Intent?) {
+        val sessionId = intent?.getStringExtra("target_session_id").orEmpty()
+        if (sessionId.isEmpty()) return
+
+        val title = intent?.getStringExtra("target_session_title").orEmpty()
+
+        // Make sure it's known to the chip list (e.g. after app restart)
+        sessionStore.upsert(
+            KnownSession(
+                id = sessionId,
+                title = sessionTitleFromNotify(title, sessionId),
+            )
+        )
+        replySessionId = sessionId
+        replySessionTitle = title
+        updateReplyBadge()
+        renderSessionChips()
+
+        // Also surface the message context in the history if it was a notify
+        val msg = intent?.getStringExtra("target_message").orEmpty()
+        if (msg.isNotEmpty()) {
+            chatHistory.append(ChatMessage("notify", "$title — $msg"))
+            renderHistory()
+        }
     }
 
     private fun createNotificationChannel() {
@@ -581,7 +614,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         renderHistory()
 
         val urgent = kind == "question" || kind == "approval"
-        showSystemNotification(title, message, host, urgent)
+        showSystemNotification(title, message, host, urgent, sessionId)
 
         // Speak the alert aloud ONLY when a Bluetooth device is connected,
         // and route it through the playback queue so it never talks over
@@ -668,24 +701,41 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
     }
 
-    private fun showSystemNotification(title: String, message: String, host: String, urgent: Boolean) {
+    private fun showSystemNotification(title: String, message: String, host: String, urgent: Boolean, sessionId: String = "") {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             return
         }
+
+        // Tapping the notification opens the app and selects the session
+        // chip for the session that produced this notification.
+        val intent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("target_session_id", sessionId)
+            putExtra("target_session_title", title)
+            putExtra("target_message", message)
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            sessionId.hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(message + if (host.isNotEmpty()) " (from $host)" else "")
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
             .setPriority(if (urgent) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
 
         if (urgent) {
             builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
         }
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+        notificationManager.notify(sessionId.hashCode(), builder.build())
     }
 
     // ------------------------------------------------------------------
@@ -864,10 +914,13 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent) // keep getIntent() in sync for singleTask relaunch
         // Auto-start listening if invoked while the app is already open in the background
         if (isVoiceInvocation(intent.action)) {
             if (isConnected) startListening() else startOfflineDictation()
         }
+        // Notification tap: select the session chip for that notification
+        handleTargetSessionIntent(intent)
     }
 
     private fun startListening() {
