@@ -1,6 +1,7 @@
 import os
 import asyncio
 import datetime
+import json
 import subprocess
 from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -212,32 +213,13 @@ async def websocket_endpoint(websocket: WebSocket):
                 except Exception:
                     pass  # not JSON — treat as plain text
 
-            # 3. Call Hermes
-            env = os.environ.copy()
-            env["PATH"] = f"/home/service/.local/bin:{env.get('PATH', '')}"
-
+            # 3. Call Hermes on the server
             # Target session: explicit session_id wins; otherwise fall back
             # to the daily rotating android session.
             effective_session = target_session or session_name
-            cmd = ["hermes", "-z", message, "--continue", effective_session]
             print(f"🎯 Session: {effective_session}")
 
-            try:
-                result = await asyncio.to_thread(
-                    subprocess.run,
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                    env=env
-                )
-                reply_text = result.stdout.strip()
-            except subprocess.CalledProcessError as e:
-                reply_text = "I'm sorry, I encountered an error."
-                print(f"Error: {e.stderr}")
-            except FileNotFoundError:
-                reply_text = "Hermes binary not found."
-
+            reply_text = await asyncio.to_thread(_run_hermes, message, effective_session)
             print(f"💬 Hermes says: {reply_text}")
 
             # Send the text to the phone. Broadcast to ALL connected phones
