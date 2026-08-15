@@ -1,0 +1,163 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 820" width="1240" height="820" font-family="Consolas, Menlo, 'JetBrains Mono', monospace">
+  <defs>
+    <!-- Background grid -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+    </pattern>
+    <!-- Glows -->
+    <filter id="glowCyan" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowEmerald" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- Arrowheads -->
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#22d3ee"/>
+    </marker>
+    <marker id="arrowEmerald" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399"/>
+    </marker>
+    <marker id="arrowSlate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowRose" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#fb7185"/>
+    </marker>
+    <!-- Node gradients -->
+    <linearGradient id="gCyan" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#083344" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#083344" stop-opacity="0.25"/>
+    </linearGradient>
+    <linearGradient id="gEmerald" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#064e3b" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#064e3b" stop-opacity="0.25"/>
+    </linearGradient>
+    <linearGradient id="gSlate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e293b" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#1e293b" stop-opacity="0.4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Base background -->
+  <rect width="1240" height="820" fill="#0d0f14"/>
+  <rect width="1240" height="820" fill="url(#grid)"/>
+
+  <!-- Tailnet security boundary -->
+  <rect x="24" y="110" width="1192" height="650" rx="16" fill="none" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="8 4" opacity="0.5"/>
+  <text x="44" y="136" fill="#fb7185" font-size="13" letter-spacing="1">TAILNET — ⚠ NO AUTH / NO TLS · DO NOT EXPOSE PUBLICLY</text>
+
+  <!-- Title -->
+  <text x="620" y="52" text-anchor="middle" fill="#e5e7eb" font-size="26" font-weight="bold">Hermes Assistant — System Architecture</text>
+  <circle cx="432" cy="46" r="5" fill="#10b981" filter="url(#glowEmerald)"/>
+  <circle cx="808" cy="46" r="5" fill="#10b981" filter="url(#glowEmerald)"/>
+  <text x="620" y="78" text-anchor="middle" fill="#8b93a7" font-size="13">hands-free voice · notifications from any host · targeted replies</text>
+
+  <!-- ======================= PHONE ======================= -->
+  <g>
+    <!-- opaque backing to hide arrows -->
+    <rect x="70" y="180" width="280" height="420" rx="18" fill="#0f172a"/>
+    <rect x="70" y="180" width="280" height="420" rx="18" fill="url(#gCyan)" stroke="#22d3ee" stroke-width="1.5"/>
+    <text x="210" y="210" text-anchor="middle" fill="#22d3ee" font-size="15" font-weight="bold">Android Phone</text>
+    <text x="210" y="228" text-anchor="middle" fill="#67e8f9" font-size="10">HermesAssistant app (Kotlin)</text>
+
+    <!-- app features -->
+    <g font-size="11" fill="#cbd5e1">
+      <text x="92" y="258">◉ voice chat · wake word · auto-listen</text>
+      <text x="92" y="278">◉ FIFO audio queue (BT-gated)</text>
+      <text x="92" y="298">◉ notifications from every host</text>
+      <text x="92" y="318">◉ notification direct-reply</text>
+      <text x="92" y="338">◉ session chips + tap-to-target</text>
+      <text x="92" y="358">◉ typed text input</text>
+      <text x="92" y="378">◉ offline Vosk dictation queue</text>
+      <text x="92" y="398">◉ configurable server (settings)</text>
+      <text x="92" y="418">◉ foreground service (keep-alive)</text>
+    </g>
+    <rect x="92" y="440" width="236" height="36" rx="8" fill="#0f172a" stroke="#155e75" stroke-width="1"/>
+    <text x="210" y="463" text-anchor="middle" fill="#67e8f9" font-size="11">ws://&lt;host&gt;:8000/chat/stream</text>
+  </g>
+
+  <!-- ======================= RELAY SERVER ======================= -->
+  <g>
+    <rect x="470" y="190" width="330" height="400" rx="14" fill="#0f172a"/>
+    <rect x="470" y="190" width="330" height="400" rx="14" fill="url(#gEmerald)" stroke="#34d399" stroke-width="1.5"/>
+    <text x="635" y="218" text-anchor="middle" fill="#34d399" font-size="15" font-weight="bold">Relay Server</text>
+    <text x="635" y="236" text-anchor="middle" fill="#6ee7b7" font-size="10">Linux · FastAPI + edge-tts · port 8000</text>
+
+    <!-- endpoints -->
+    <rect x="492" y="258" width="286" height="52" rx="8" fill="#0f172a" stroke="#059669" stroke-width="1"/>
+    <text x="506" y="278" fill="#6ee7b7" font-size="11" font-weight="bold">WS /chat/stream</text>
+    <text x="506" y="296" fill="#a7f3d0" font-size="10">voice chat: text in → reply + TTS audio out</text>
+
+    <rect x="492" y="322" width="286" height="52" rx="8" fill="#0f172a" stroke="#059669" stroke-width="1"/>
+    <text x="506" y="342" fill="#6ee7b7" font-size="11" font-weight="bold">POST /chat/message</text>
+    <text x="506" y="360" fill="#a7f3d0" font-size="10">one-shot text → hermes (direct reply)</text>
+
+    <rect x="492" y="386" width="286" height="52" rx="8" fill="#0f172a" stroke="#059669" stroke-width="1"/>
+    <text x="506" y="406" fill="#6ee7b7" font-size="11" font-weight="bold">POST /hermes-events</text>
+    <text x="506" y="424" fill="#a7f3d0" font-size="10">shell-hook events → buffered (20) → push</text>
+
+    <!-- internal hermes box -->
+    <rect x="492" y="458" width="286" height="56" rx="8" fill="#022c22" stroke="#34d399" stroke-width="1" stroke-dasharray="4 3"/>
+    <text x="635" y="482" text-anchor="middle" fill="#34d399" font-size="11" font-weight="bold">hermes -z &lt;msg&gt; --continue &lt;session&gt;</text>
+    <text x="635" y="500" text-anchor="middle" fill="#a7f3d0" font-size="10">replies + TTS via edge-tts (en-US-AriaNeural)</text>
+
+    <text x="635" y="578" text-anchor="middle" fill="#6ee7b7" font-size="10">notify buffer (max 20, in-memory)</text>
+  </g>
+
+  <!-- ======================= HERMES HOSTS ======================= -->
+  <g>
+    <!-- Windows -->
+    <rect x="900" y="180" width="290" height="150" rx="12" fill="#0f172a"/>
+    <rect x="900" y="180" width="290" height="150" rx="12" fill="url(#gSlate)" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="1045" y="208" text-anchor="middle" fill="#e2e8f0" font-size="14" font-weight="bold">Windows PC</text>
+    <text x="1045" y="226" text-anchor="middle" fill="#94a3b8" font-size="10">runs Hermes Agent sessions</text>
+    <rect x="920" y="242" width="250" height="34" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <text x="1045" y="263" text-anchor="middle" fill="#cbd5e1" font-size="11">notify_hermes.py (shell hooks)</text>
+    <text x="1045" y="316" text-anchor="middle" fill="#64748b" font-size="10">local state.db · session context</text>
+
+    <!-- Linux -->
+    <rect x="900" y="380" width="290" height="160" rx="12" fill="#0f172a"/>
+    <rect x="900" y="380" width="290" height="160" rx="12" fill="url(#gSlate)" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="1045" y="408" text-anchor="middle" fill="#e2e8f0" font-size="14" font-weight="bold">Linux Server</text>
+    <text x="1045" y="426" text-anchor="middle" fill="#94a3b8" font-size="10">irl-server-01 · runs Hermes too</text>
+    <rect x="920" y="442" width="250" height="34" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1"/>
+    <text x="1045" y="463" text-anchor="middle" fill="#cbd5e1" font-size="11">notify_hermes.py (shell hooks)</text>
+    <text x="1045" y="522" text-anchor="middle" fill="#64748b" font-size="10">local state.db · session context</text>
+  </g>
+
+  <!-- ======================= CONNECTIONS ======================= -->
+  <!-- Phone <-> Relay: voice chat (double-headed) -->
+  <path d="M 350 300 L 462 300" stroke="#22d3ee" stroke-width="2" marker-start="url(#arrowCyan)" marker-end="url(#arrowCyan)"/>
+  <text x="406" y="288" text-anchor="middle" fill="#67e8f9" font-size="10">WS voice chat</text>
+
+  <!-- Phone -> Relay: direct reply (lower) -->
+  <path d="M 350 380 L 462 380" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)"/>
+  <text x="406" y="396" text-anchor="middle" fill="#67e8f9" font-size="10">POST /chat/message</text>
+
+  <!-- Hosts -> Relay: hooks -->
+  <path d="M 890 260 L 808 260" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowEmerald)"/>
+  <text x="848" y="248" text-anchor="middle" fill="#94a3b8" font-size="10">POST /hermes-events</text>
+
+  <path d="M 890 460 L 808 460" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrowEmerald)"/>
+  <text x="848" y="448" text-anchor="middle" fill="#94a3b8" font-size="10">POST /hermes-events</text>
+
+  <!-- Relay -> Phone: notify push -->
+  <path d="M 470 560 C 420 585, 380 585, 350 560" stroke="#34d399" stroke-width="2" fill="none" marker-end="url(#arrowEmerald)" stroke-dasharray="6 4"/>
+  <text x="408" y="612" text-anchor="middle" fill="#6ee7b7" font-size="10">notify push (session title + text)</text>
+
+  <!-- ======================= LEGEND ======================= -->
+  <g font-size="11">
+    <rect x="44" y="692" width="14" height="14" rx="3" fill="#083344" stroke="#22d3ee"/>
+    <text x="66" y="703" fill="#cbd5e1">Android app</text>
+    <rect x="180" y="692" width="14" height="14" rx="3" fill="#064e3b" stroke="#34d399"/>
+    <text x="202" y="703" fill="#cbd5e1">Relay server (FastAPI)</text>
+    <rect x="390" y="692" width="14" height="14" rx="3" fill="#1e293b" stroke="#94a3b8"/>
+    <text x="412" y="703" fill="#cbd5e1">Hermes hosts (Windows / Linux)</text>
+    <line x1="640" y1="699" x2="690" y2="699" stroke="#fb7185" stroke-width="2" stroke-dasharray="6 4"/>
+    <text x="700" y="703" fill="#fb7185">security boundary (none yet!)</text>
+  </g>
+  <text x="620" y="745" text-anchor="middle" fill="#475569" font-size="11">all links traverse Tailscale — the relay has NO auth, keep it off the public internet</text>
+</svg>

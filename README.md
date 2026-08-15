@@ -6,22 +6,13 @@ Hermes Agent sessions running on your own machines — over your own network
 notifications for *any* Hermes session on *any* host, supports typed text,
 offline dictation, and targeted replies to specific sessions.
 
-```
-┌─────────────────────┐         ┌──────────────────────────┐
-│  Android phone      │         │  Relay server (Linux)    │
-│  (this app)         │  WS/HTTP│  streaming_backend/      │
-│                     │◄───────►│  FastAPI + edge-tts      │
-│  - voice chat       │         │  port 8000               │
-│  - notifications    │         └──────┬───────────────────┘
-│  - session chips    │                │ shell hooks (HTTP POST)
-│  - typed text       │                ▼
-└─────────────────────┘         ┌──────────────────────────┐
-                                │ Hermes hosts             │
-                                │ (this PC, servers, ...)  │
-                                │ each runs notify_hermes  │
-                                │ + its own hermes CLI     │
-                                └──────────────────────────┘
-```
+## System overview
+
+![Architecture diagram](docs/architecture.svg)
+
+> Screenshot coming soon — replace `docs/screenshot.png` with a real one.
+
+![App screenshot placeholder](docs/screenshot.png)
 
 ## Repository layout
 
