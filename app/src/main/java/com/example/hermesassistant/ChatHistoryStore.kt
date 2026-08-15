@@ -78,6 +78,16 @@ class ChatHistoryStore(context: Context) {
         saveJson(historyFile, messages)
     }
 
+    /**
+     * Re-read history from disk. Needed when another component in the same
+     * process (e.g. NotificationReplyReceiver handling an inline reply)
+     * appended to the shared chat_history.json while the activity's
+     * in-memory list was stale.
+     */
+    fun reload() {
+        messages = loadJson(historyFile)
+    }
+
     fun markQueuedDelivered(entry: ChatMessage) {
         // Replace the queued marker in history with the delivered form
         messages = messages.map {

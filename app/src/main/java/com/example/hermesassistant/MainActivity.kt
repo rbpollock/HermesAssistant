@@ -101,6 +101,12 @@ class MainActivity : AppCompatActivity() {
                     val text = intent.getStringExtra(HermesForegroundService.EXTRA_DICTATION_TEXT).orEmpty()
                     handleDictatedText(text)
                 }
+                NotificationReplyReceiver.ACTION_HISTORY_UPDATED -> {
+                    // An inline reply from the shade appended to the shared
+                    // chat_history.json — reload so it shows up here.
+                    chatHistory.reload()
+                    renderHistory()
+                }
             }
         }
     }
@@ -360,6 +366,7 @@ class MainActivity : AppCompatActivity() {
         val filter = android.content.IntentFilter().apply {
             addAction(HermesForegroundService.ACTION_WAKE_WORD)
             addAction(HermesForegroundService.ACTION_DICTATION_RESULT)
+            addAction(NotificationReplyReceiver.ACTION_HISTORY_UPDATED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(serviceReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
@@ -367,6 +374,10 @@ class MainActivity : AppCompatActivity() {
             @Suppress("UnspecifiedRegisterReceiverFlag")
             registerReceiver(serviceReceiver, filter)
         }
+        // Inline replies from the shade may have appended to history while
+        // we were in the background — pick them up now.
+        chatHistory.reload()
+        renderHistory()
     }
 
     override fun onPause() {

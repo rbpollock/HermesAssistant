@@ -32,6 +32,9 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         const val EXTRA_NOTIFY_TITLE = "reply_notify_title"
         const val KEY_TEXT_REPLY = "reply_text"
         private const val REPLY_CHANNEL = "hermes_replies"
+        // Broadcast to the (possibly alive) MainActivity so it reloads its
+        // history view after an inline reply appends to chat_history.json.
+        const val ACTION_HISTORY_UPDATED = "com.example.hermesassistant.HISTORY_UPDATED"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -49,6 +52,13 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             notifyReply(context, "Reply not sent", "Empty message", sessionId, sessionTitle)
             return
         }
+
+        // Record the user's reply in the shared chat history immediately,
+        // tagged with the session it was sent to. MainActivity reads the
+        // same chat_history.json, so the message appears in the app even
+        // if the process was backgrounded.
+        appendToHistory(context, "user", text, sessionId, sessionTitle)
+        broadcastHistoryUpdated(context)
 
         // HTTP call must happen off the main thread
         val pendingResult = goAsync()
@@ -70,6 +80,11 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                     val json = JSONObject(respBody)
                     if (response.isSuccessful && json.optBoolean("ok", false)) {
                         val reply = json.optString("reply", "")
+                        // Also record Hermes' answer in the shared history.
+                        if (reply.isNotEmpty()) {
+                            appendToHistory(context, "hermes", reply, sessionId, sessionTitle)
+                        }
+                        broadcastHistoryUpdated(context)
                         notifyReply(context, "Hermes replied", reply, sessionId, sessionTitle)
                     } else {
                         notifyReply(context, "Reply not sent", json.optString("error", "server error"), sessionId, sessionTitle)
@@ -81,6 +96,30 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                 pendingResult.finish()
             }
         }.start()
+    }
+
+    /** Append a message to the shared chat_history.json (best-effort). */
+    private fun appendToHistory(context: Context, role: String, text: String, sessionId: String, sessionTitle: String) {
+        try {
+            ChatHistoryStore(context).append(
+                ChatMessage(
+                    role = role,
+                    text = text,
+                    sessionId = sessionId,
+                    sessionTitle = sessionTitle,
+                )
+            )
+        } catch (e: Exception) {
+            // History is best-effort — never let it break the reply flow.
+        }
+    }
+
+    private fun broadcastHistoryUpdated(context: Context) {
+        try {
+            context.sendBroadcast(Intent(ACTION_HISTORY_UPDATED).setPackage(context.packageName))
+        } catch (e: Exception) {
+            // No listeners — fine.
+        }
     }
 
     private fun notifyReply(context: Context, title: String, message: String, sessionId: String, sessionTitle: String = "") {
