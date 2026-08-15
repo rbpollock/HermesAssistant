@@ -565,12 +565,15 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                             }
                         }
                     } catch (e: Exception) {
-                        // Non-JSON frame. Show a short diagnostic and keep the
-                        // raw text in history so we can see exactly what arrived.
-                        val raw = text.take(200)
-                        chatHistory.append(ChatMessage("notify", "⚠ Non-JSON frame: $raw"))
+                        // Any failure in the message path lands here. Show the
+                        // REAL exception (not just the raw frame) so the
+                        // status line tells us what actually broke. Note: a
+                        // valid-JSON notify that fails inside handleNotify()
+                        // ALSO lands here — that's why we log e.message.
+                        val diag = "⚠ WS msg error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"
+                        chatHistory.append(ChatMessage("notify", diag))
                         renderHistory()
-                        setStatus("Unexpected data from server", StatusRingView.State.CONNECTED)
+                        setStatus(diag, StatusRingView.State.CONNECTED)
                     }
                 }
             }
@@ -684,7 +687,15 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         renderHistory()
 
         val urgent = kind == "question" || kind == "approval"
-        showSystemNotification(title, message, host, urgent, sessionId)
+        try {
+            showSystemNotification(title, message, host, urgent, sessionId)
+        } catch (e: Exception) {
+            // A notification failure must not kill the message pipeline;
+            // log it so it's visible instead of being misreported as a
+            // parse error by the WS handler's catch-all.
+            chatHistory.append(ChatMessage("notify", "⚠ notify error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"))
+            renderHistory()
+        }
 
         // Speak the alert aloud ONLY when a Bluetooth device is connected,
         // and route it through the playback queue so it never talks over
@@ -847,7 +858,12 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         if (urgent) {
             builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
         }
-        notificationManager.notify(sessionId.hashCode(), builder.build())
+        // CRITICAL: use the sanitized notifId (100+ range). The raw
+        // sessionId.hashCode() is negative for many ids and Samsung
+        // drops — and on some builds throws on — negative notification
+        // IDs. This was the cause of both missing notifications and
+        // the "WS msg error" status.
+        notificationManager.notify(notifId, builder.build())
     }
 
     // ------------------------------------------------------------------
