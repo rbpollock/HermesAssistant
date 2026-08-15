@@ -1092,16 +1092,21 @@ class MainActivity : AppCompatActivity() {
         // Free the mic: stop the service's wake word before Google STT.
         stopWakeWordForStt()
 
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            // Wait longer before finalizing: a pause mid-thought shouldn't
-            // send the text immediately. These are hints the Google recognizer
-            // generally honors (Samsung included).
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-        }
-        speechRecognizer.startListening(intent)
+        // The AudioRecord release takes a moment to propagate through the
+        // audio HAL; starting STT immediately can fail with ERROR_AUDIO.
+        // Small settle delay is the standard fix for this handoff.
+        statusText.postDelayed({
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+                // Wait longer before finalizing: a pause mid-thought shouldn't
+                // send the text immediately. These are hints the Google recognizer
+                // generally honors (Samsung included).
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
+                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
+            }
+            speechRecognizer.startListening(intent)
+        }, 300)
         setStatus("Listening...", StatusRingView.State.LISTENING)
     }
 

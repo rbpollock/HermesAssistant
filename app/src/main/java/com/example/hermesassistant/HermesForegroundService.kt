@@ -198,6 +198,12 @@ class HermesForegroundService : Service(), RecognitionListener {
 
     private fun stopVoskService() {
         voskService?.stop()
+        // CRITICAL: stop() only halts the recognizer THREAD; the
+        // AudioRecord created in the SpeechService constructor stays
+        // allocated until shutdown() releases it. Without this, the mic
+        // remains held when the wake word triggers Google STT, which then
+        // fails instantly (the 'flash' back to wake-word mode).
+        voskService?.shutdown()
         voskService = null
     }
 
