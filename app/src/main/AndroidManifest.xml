@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
@@ -66,12 +67,13 @@
             android:name=".NotificationReplyReceiver"
             android:exported="false" />
 
-        <!-- Keeps the app process alive in the background so the WebSocket
-             and notifications keep working (fixes OEM background freezing) -->
+        <!-- Keeps the app process alive so the WebSocket and notifications
+             keep working, AND runs the always-on Vosk wake word (mic stays
+             open while backgrounded). Fixes OEM background freezing. -->
         <service
             android:name=".HermesForegroundService"
             android:exported="false"
-            android:foregroundServiceType="remoteMessaging" />
+            android:foregroundServiceType="remoteMessaging|microphone" />
 
     </application>
 </manifest>

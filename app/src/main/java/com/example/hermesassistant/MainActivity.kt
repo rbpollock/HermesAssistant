@@ -45,13 +45,8 @@ import java.util.concurrent.TimeUnit
 import okio.ByteString
 
 import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import org.vosk.android.RecognitionListener as VoskRecognitionListener
-import org.vosk.android.SpeechService
-import org.vosk.android.StorageService
 
-class MainActivity : AppCompatActivity(), VoskRecognitionListener {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var speechRecognizer: SpeechRecognizer
     private lateinit var statusText: TextView
@@ -95,8 +90,20 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private var audioTempFile: File? = null
     private var audioOutputStream: FileOutputStream? = null
 
-    private var voskModel: Model? = null
-    private var voskService: SpeechService? = null
+    // Wake word + dictation now live in HermesForegroundService (so the
+    // mic stays open while backgrounded). MainActivity just sends it
+    // commands and listens for its broadcasts.
+    private val serviceReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+            when (intent?.action) {
+                HermesForegroundService.ACTION_WAKE_WORD -> onWakeWordHeard()
+                HermesForegroundService.ACTION_DICTATION_RESULT -> {
+                    val text = intent.getStringExtra(HermesForegroundService.EXTRA_DICTATION_TEXT).orEmpty()
+                    handleDictatedText(text)
+                }
+            }
+        }
+    }
 
     // Guards against duplicate auto-listen triggers
     private var autoListenScheduled = false
@@ -123,6 +130,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
         private const val REQ_POST_NOTIFICATIONS = 2
+        private const val REQ_RECORD_AUDIO = 3
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -151,13 +159,16 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         initTts()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
+        } else {
+            // Mic already granted — make sure the service wake word is up
+            // (it may have started before the service finished loading).
+            HermesForegroundService.notifyMicPermissionGranted()
         }
         requestNotificationPermissionIfNeeded()
 
         setupSpeechRecognizer()
         connectWebSocket()
-        initVosk()
         renderHistory()
         updateQueueBadge()
         renderSessionChips()
@@ -330,6 +341,39 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         }
     }
 
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO) {
+            // The wake word lives in the foreground service, which started
+            // before the user tapped "Allow" — now that we have the mic,
+            // tell it to start listening. (This was the fresh-install bug:
+            // Vosk tried to grab the mic before permission was granted and
+            // nothing ever retried.)
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                HermesForegroundService.notifyMicPermissionGranted()
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        val filter = android.content.IntentFilter().apply {
+            addAction(HermesForegroundService.ACTION_WAKE_WORD)
+            addAction(HermesForegroundService.ACTION_DICTATION_RESULT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(serviceReceiver, filter, android.content.Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(serviceReceiver, filter)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(serviceReceiver) } catch (e: Exception) { /* not registered */ }
+    }
+
     /** Open this app's notification settings page (where the toggle lives). */
     private fun openNotificationSettings() {
         try {
@@ -350,57 +394,40 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     // ------------------------------------------------------------------
-    // Vosk wake word + offline dictation
+    // Wake word + offline dictation — owned by HermesForegroundService
     // ------------------------------------------------------------------
 
-    private fun initVosk() {
-        StorageService.unpack(this, "model", "model",
-            { model: Model ->
-                voskModel = model
-                startVoskWakeWord()
-            },
-            { exception ->
-                runOnUiThread { setStatus("Failed to load wake word model: ${exception.message}", StatusRingView.State.IDLE) }
-            }
-        )
+    /** Ask the foreground service to start/keep the wake word running. */
+    private fun startWakeWord() {
+        HermesForegroundService.startWakeWordNow()
+        speakButton.text = "LISTENING FOR WAKE WORD"
+        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
     }
 
-    private fun startVoskWakeWord() {
-        if (voskModel == null) return
-        try {
-            val recognizer = Recognizer(voskModel, 16000.0f)
-            voskService = SpeechService(recognizer, 16000.0f)
-            voskService?.startListening(this)
-            runOnUiThread {
-                speakButton.text = "LISTENING FOR WAKE WORD"
-                setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
-            }
-        } catch (e: Exception) {
-            runOnUiThread { setStatus("Vosk Error: ${e.message}", StatusRingView.State.IDLE) }
-        }
+    /** Free the mic for the Google speech recognizer. */
+    private fun stopWakeWordForStt() {
+        HermesForegroundService.stopWakeWord()
     }
 
-    /** Offline: Vosk captures the next full phrase and queues it. */
+    /** Tell the service to transcribe the next phrase (offline dictation). */
     private fun startOfflineDictation() {
-        // Make sure Vosk is actually running (it doubles as the dictation engine)
-        if (voskService == null) {
-            startVoskWakeWord()
-        }
         dictationMode = true
         speakButton.text = "TAP TO CANCEL"
         setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
+        HermesForegroundService.startDictation()
 
         // Keep trying to reach the server in the background so queued
         // messages flush as soon as the link returns.
         connectWebSocket()
 
-        // If the user says nothing, fall back to wake-word mode after 15s
+        // If the user says nothing, fall back to wake-word mode after 20s
+        // (a bit longer than the 15s STT default — people pause to think).
         dictationWatchdog?.let { statusText.removeCallbacks(it) }
         dictationWatchdog = Runnable {
             if (dictationMode) {
                 exitDictationMode()
             }
-        }.also { statusText.postDelayed(it, 15000) }
+        }.also { statusText.postDelayed(it, 20000) }
     }
 
     private fun exitDictationMode() {
@@ -409,41 +436,14 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         dictationWatchdog = null
         speakButton.text = "LISTENING FOR WAKE WORD"
         setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
-        // Vosk keeps listening — restart the service so the recognizer
-        // starts a fresh phrase-buffer in wake-word mode
-        voskService?.stop()
-        voskService = null
-        startVoskWakeWord()
+        startWakeWord()
     }
 
-    override fun onPartialResult(hypothesis: String?) {
-        if (dictationMode) return // wait for the final phrase
-        if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
-            triggerAssistantFromWakeWord()
-        }
-    }
-
-    override fun onResult(hypothesis: String?) {
-        if (dictationMode) {
-            handleDictatedText(hypothesis)
-            return
-        }
-        if (hypothesis?.contains("hey hermes") == true || hypothesis?.contains("hermes") == true) {
-            triggerAssistantFromWakeWord()
-        }
-    }
-
-    override fun onFinalResult(hypothesis: String?) {}
-
-    override fun onError(exception: Exception?) {
-        if (dictationMode) {
-            exitDictationMode()
-        }
-    }
-
-    override fun onTimeout() {
-        if (dictationMode) {
-            exitDictationMode()
+    /** The service heard "Hey Hermes" — take over from the wake word. */
+    private fun onWakeWordHeard() {
+        runOnUiThread {
+            speakButton.text = "TAP TO SPEAK TO HERMES"
+            if (isConnected) startListening() else startOfflineDictation()
         }
     }
 
@@ -471,20 +471,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         connectWebSocket()
 
         // Back to wake-word listening
-        voskService?.stop()
-        voskService = null
-        startVoskWakeWord()
-    }
-
-    private fun triggerAssistantFromWakeWord() {
-        // Pause Vosk so the main recognizer / dictation can take over
-        voskService?.stop()
-        voskService = null
-
-        runOnUiThread {
-            speakButton.text = "TAP TO SPEAK TO HERMES"
-            if (isConnected) startListening() else startOfflineDictation()
-        }
+        startWakeWord()
     }
 
     // ------------------------------------------------------------------
@@ -1058,9 +1045,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         statusText.postDelayed({
             autoListenScheduled = false
             // If the user tapped something else in the meantime, don't steal the mic
-            if (isSpeaking || voskService != null || flushingQueue) return@postDelayed
+            if (isSpeaking || flushingQueue) return@postDelayed
             // Offline: return to wake-word mode rather than auto-dictating
-            if (isConnected) startListening() else startVoskWakeWord()
+            if (isConnected) startListening() else startWakeWord()
         }, 700)
     }
 
@@ -1102,13 +1089,17 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     }
 
     private fun startListening() {
-        // Stop wake word if it's currently running so we can grab the mic
-        voskService?.stop()
-        voskService = null
+        // Free the mic: stop the service's wake word before Google STT.
+        stopWakeWordForStt()
 
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
+            // Wait longer before finalizing: a pause mid-thought shouldn't
+            // send the text immediately. These are hints the Google recognizer
+            // generally honors (Samsung included).
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
         }
         speechRecognizer.startListening(intent)
         setStatus("Listening...", StatusRingView.State.LISTENING)
@@ -1130,7 +1121,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                     startOfflineDictation()
                 } else {
                     setStatus("Error listening. Try again.", StatusRingView.State.IDLE)
-                    startVoskWakeWord()
+                    startWakeWord()
                 }
             }
 
@@ -1140,7 +1131,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                     sendUserMessage(matches[0])
                 } else {
                     // Nothing recognized — back to wake word
-                    startVoskWakeWord()
+                    startWakeWord()
                 }
             }
             override fun onPartialResults(partialResults: Bundle?) {}

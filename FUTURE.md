@@ -60,8 +60,6 @@ newest. Messages persist to `filesDir/chat_history.json` across restarts.
 
 ## Nice-to-have backlog
 
-- **Wake-word re-arm toggle:** some users want the auto-listen loop (#1) to
-  return to wake-word mode instead of raw listening.
 - **Per-session notification muting:** pick which session IDs/cwds should
   NOT produce phone alerts (mirror of the `SELF_CWD_PREFIXES` filter in
   `notify_hermes.py`, but user-controlled).
