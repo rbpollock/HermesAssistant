@@ -28,15 +28,20 @@
         <HorizontalScrollView
             android:id="@+id/sessionChipsScroll"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:scrollbars="none"
+            android:layout_height="48dp"
+            android:scrollbars="horizontal"
+            android:fadeScrollbars="true"
+            android:scrollbarSize="3dp"
+            android:overScrollMode="ifContentScrolls"
+            android:clipToPadding="false"
             android:paddingStart="16dp"
             android:paddingEnd="16dp">
 
             <LinearLayout
                 android:id="@+id/sessionChipsRow"
                 android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center_vertical"
                 android:orientation="horizontal" />
         </HorizontalScrollView>
 

@@ -63,6 +63,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private lateinit var textInput: android.widget.EditText
     private lateinit var sendButton: android.widget.ImageButton
     private lateinit var sessionChipsRow: LinearLayout
+    private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
     private lateinit var notificationManager: NotificationManager
     private lateinit var sessionStore: SessionStore
     private var tts: TextToSpeech? = null
@@ -131,6 +132,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         textInput = findViewById(R.id.textInput)
         sendButton = findViewById(R.id.sendButton)
         sessionChipsRow = findViewById(R.id.sessionChipsRow)
+        sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
@@ -690,6 +692,9 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
                 ).apply { marginEnd = dp(8) }
             )
         }
+
+        // Scroll to the end so the newest chip is visible in the band
+        sessionChipsScroll.post { sessionChipsScroll.fullScroll(View.FOCUS_RIGHT) }
     }
 
     private fun chipBackground(selected: Boolean) = GradientDrawable().apply {
