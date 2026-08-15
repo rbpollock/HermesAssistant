@@ -14,8 +14,10 @@ import android.graphics.drawable.GradientDrawable
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -303,6 +305,25 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS)
+        }
+    }
+
+    /** Open this app's notification settings page (where the toggle lives). */
+    private fun openNotificationSettings() {
+        try {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+            }
+            startActivity(intent)
+        } catch (e: Exception) {
+            // Fallback: app details page
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                })
+            } catch (e2: Exception) {
+                setStatus("Enable notifications in system settings", StatusRingView.State.IDLE)
+            }
         }
     }
 
@@ -730,10 +751,17 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            // Don't fail silently — tell the user where to fix it
-            setStatus("Notifications blocked — enable in app settings", StatusRingView.State.CONNECTED)
+            // Don't fail silently — tell the user where to fix it, re-request
+            // (works if they previously dismissed the dialog), and make the
+            // status line tappable to open notification settings.
+            setStatus("Notifications blocked — tap here to enable", StatusRingView.State.CONNECTED)
+            statusText.isClickable = true
+            statusText.setOnClickListener { openNotificationSettings() }
+            requestNotificationPermissionIfNeeded()
             return
         }
+        statusText.setOnClickListener(null)
+        statusText.isClickable = false
 
         // sessionId.hashCode() can be negative; Samsung silently drops
         // notifications with negative IDs. Mask the sign bit so IDs are
