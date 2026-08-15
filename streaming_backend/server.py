@@ -32,6 +32,55 @@ class HermesEvent(BaseModel):
     extra: dict = {}
 
 
+class ChatMessageIn(BaseModel):
+    message: str = ""
+    session_id: str = ""
+
+
+def _run_hermes(message: str, session: str) -> str:
+    """Run one-shot hermes against the given session and return stdout."""
+    env = os.environ.copy()
+    env["PATH"] = f"/home/service/.local/bin:{env.get('PATH', '')}"
+    cmd = ["hermes", "-z", message, "--continue", session]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+            timeout=180,
+        )
+        return result.stdout.strip()
+    except subprocess.CalledProcessError as e:
+        print(f"Error: {e.stderr}")
+        return "I'm sorry, I encountered an error."
+    except FileNotFoundError:
+        return "Hermes binary not found."
+    except subprocess.TimeoutExpired:
+        return "Hermes took too long to respond."
+
+
+@app.post("/chat/message")
+async def chat_message(msg: ChatMessageIn):
+    """One-shot text message to a specific session.
+
+    Used by the app's notification direct-reply (which must work even
+    when the phone app process is not running — HTTP, not WebSocket).
+    """
+    message = msg.message.strip()
+    if not message:
+        return {"ok": False, "error": "empty message"}
+
+    today = datetime.datetime.now().strftime("%Y_%m_%d")
+    session_name = f"android_{today}"
+    effective_session = msg.session_id or session_name
+
+    reply = await asyncio.to_thread(_run_hermes, message, effective_session)
+    print(f"💬 HTTP chat -> session {effective_session}: {reply[:200]}")
+    return {"ok": True, "session_id": effective_session, "reply": reply}
+
+
 @app.post("/hermes-events")
 async def hermes_event(event: HermesEvent):
     """Receive shell-hook events from any Hermes host and relay them to the phone."""

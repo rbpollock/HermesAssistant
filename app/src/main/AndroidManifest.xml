@@ -54,5 +54,10 @@
             android:permission="android.permission.BIND_VOICE_INTERACTION"
             android:exported="true" />
 
+        <!-- Receives notification direct-reply text and sends it to the server -->
+        <receiver
+            android:name=".NotificationReplyReceiver"
+            android:exported="false" />
+
     </application>
 </manifest>

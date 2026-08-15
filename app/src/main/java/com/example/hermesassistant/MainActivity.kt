@@ -29,6 +29,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -723,6 +724,28 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // "Reply" action: type directly in the notification shade and send
+        // to that session (works even if the app process is not running).
+        val replyIntent = Intent(this, NotificationReplyReceiver::class.java).apply {
+            putExtra(NotificationReplyReceiver.EXTRA_SESSION_ID, sessionId)
+            putExtra(NotificationReplyReceiver.EXTRA_SESSION_TITLE, title)
+            putExtra(NotificationReplyReceiver.EXTRA_NOTIFY_TITLE, title)
+        }
+        val replyPendingIntent = PendingIntent.getBroadcast(
+            this,
+            sessionId.hashCode() + 2,
+            replyIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val remoteInput = RemoteInput.Builder(NotificationReplyReceiver.KEY_TEXT_REPLY)
+            .setLabel("Reply to Hermes")
+            .build()
+        val replyAction = NotificationCompat.Action.Builder(
+            android.R.drawable.ic_menu_send,
+            "Reply",
+            replyPendingIntent
+        ).addRemoteInput(remoteInput).build()
+
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
@@ -730,6 +753,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .addAction(replyAction)
             .setPriority(if (urgent) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
 
         if (urgent) {
