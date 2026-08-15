@@ -39,6 +39,10 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false" />
+
         <!-- Registers as a full Default Digital Assistant to replace Bixby -->
         <service
             android:name=".HermesVoiceInteractionService"

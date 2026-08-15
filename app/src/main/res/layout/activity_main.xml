@@ -182,5 +182,19 @@
             android:contentDescription="Type a message"
             android:padding="12dp"
             android:src="@android:drawable/ic_menu_edit" />
+
+        <!-- Gear icon, top-left of the bottom section (opposite the
+             keyboard icon): opens settings. Same size as the keyboard icon. -->
+        <ImageButton
+            android:id="@+id/settingsButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_gravity="top|start"
+            android:layout_marginTop="16dp"
+            android:layout_marginStart="16dp"
+            android:background="@drawable/circle_icon_background"
+            android:contentDescription="Settings"
+            android:padding="12dp"
+            android:src="@android:drawable/ic_menu_preferences" />
     </FrameLayout>
 </LinearLayout>

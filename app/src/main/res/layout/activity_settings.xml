@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0D0F14"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="20dp"
+        android:text="Settings"
+        android:textColor="#E5E7EB"
+        android:textSize="24sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="6dp"
+        android:text="Home server"
+        android:textColor="#8B93A7"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="12dp"
+        android:text="IP address or hostname of the Hermes relay server (e.g. 100.123.127.108)"
+        android:textColor="#6B7280"
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/settingsHostInput"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@drawable/text_input_background"
+        android:hint="Host (e.g. 100.123.127.108)"
+        android:inputType="text"
+        android:maxLines="1"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:textColor="#E5E7EB"
+        android:textColorHint="#8B93A7"
+        android:textSize="14sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="16dp"
+        android:paddingBottom="6dp"
+        android:text="Port"
+        android:textColor="#8B93A7"
+        android:textSize="13sp"
+        android:textStyle="bold" />
+
+    <EditText
+        android:id="@+id/settingsPortInput"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="@drawable/text_input_background"
+        android:hint="Port (e.g. 8000)"
+        android:inputType="number"
+        android:maxLines="1"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:textColor="#E5E7EB"
+        android:textColorHint="#8B93A7"
+        android:textSize="14sp" />
+
+    <Button
+        android:id="@+id/settingsSaveButton"
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:layout_marginTop="24dp"
+        android:backgroundTint="#1E293B"
+        android:text="SAVE"
+        android:textColor="#E5E7EB"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/settingsStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:gravity="center"
+        android:textColor="#10B981"
+        android:textSize="13sp" />
+
+</LinearLayout>

@@ -32,7 +32,6 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         const val EXTRA_NOTIFY_TITLE = "reply_notify_title"
         const val KEY_TEXT_REPLY = "reply_text"
         private const val REPLY_CHANNEL = "hermes_replies"
-        private const val SERVER = "http://100.123.127.108:8000"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -62,7 +61,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                     .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
 
                 val request = Request.Builder()
-                    .url("$SERVER/chat/message")
+                    .url("${ServerConfig.httpBase(context)}/chat/message")
                     .post(body)
                     .build()
 

@@ -4,6 +4,7 @@ Status of previously-deferred features:
 
 - **#4 Offline transcription queue** — ✅ IMPLEMENTED (v1.4.0)
 - **#5 Message history view** — ✅ IMPLEMENTED (v1.4.0)
+- **Foreground service** — ✅ IMPLEMENTED (v1.6.8)
 
 ---
 
@@ -59,10 +60,6 @@ newest. Messages persist to `filesDir/chat_history.json` across restarts.
 
 ## Nice-to-have backlog
 
-- **Foreground service:** keep the WebSocket + wake word alive when the app
-  is backgrounded (currently Android may kill the socket; the app
-  reconnects on foreground). Required for true "always listening for
-  notifications" behavior with #2.
 - **Wake-word re-arm toggle:** some users want the auto-listen loop (#1) to
   return to wake-word mode instead of raw listening.
 - **Per-session notification muting:** pick which session IDs/cwds should
@@ -72,3 +69,5 @@ newest. Messages persist to `filesDir/chat_history.json` across restarts.
 - **Batch endpoint option:** the queue currently flushes one-by-one over
   the WS; a `POST /chat/batch` endpoint on the server would let it send
   `{"messages": [...]}` in a single Hermes call instead.
+- **Real security on the relay:** auth (API token / mTLS) before exposing
+  port 8000 beyond the tailnet. Currently NOT enabled — see README.

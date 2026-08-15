@@ -66,6 +66,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
     private lateinit var sendButton: android.widget.ImageButton
     private lateinit var sessionChipsRow: LinearLayout
     private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
+    private lateinit var settingsButton: android.widget.ImageButton
     private lateinit var notificationManager: NotificationManager
     private lateinit var sessionStore: SessionStore
     private var tts: TextToSpeech? = null
@@ -140,6 +141,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         sendButton = findViewById(R.id.sendButton)
         sessionChipsRow = findViewById(R.id.sessionChipsRow)
         sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
+        settingsButton = findViewById(R.id.settingsButton)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
@@ -209,6 +211,11 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
             } else {
                 false
             }
+        }
+
+        // Gear icon (top-left): open settings
+        settingsButton.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
 
         // Auto-start listening if invoked via the OS Assistant hardware button,
@@ -491,7 +498,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         webSocket?.cancel()
 
         val request = Request.Builder()
-            .url("ws://100.123.127.108:8000/chat/stream")
+            .url("${ServerConfig.wsBase(this)}/chat/stream")
             .build()
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
@@ -1125,7 +1132,7 @@ class MainActivity : AppCompatActivity(), VoskRecognitionListener {
         val body = json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
 
         val request = Request.Builder()
-            .url("http://100.123.127.108:8000/chat")
+            .url("${ServerConfig.httpBase(this)}/chat")
             .post(body)
             .build()
 
