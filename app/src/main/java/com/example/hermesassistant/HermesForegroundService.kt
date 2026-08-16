@@ -151,6 +151,10 @@ class HermesForegroundService : Service(), RecognitionListener {
             // permission is already granted (fresh process / reboot).
             null -> if (micPermissionGranted) startWakeWordNow()
         }
+        // Check for updates on service start (throttled) so the update
+        // notification appears even when the app is only running as the
+        // foreground service and MainActivity never comes to the front.
+        UpdateChecker.checkAndNotify(this)
         return START_STICKY
     }
 

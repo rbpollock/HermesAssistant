@@ -71,60 +71,20 @@ class SettingsActivity : AppCompatActivity() {
         checkUpdateButton.setOnClickListener {
             statusText.text = "Checking for updates..."
             Thread {
-                val release = UpdateChecker.fetchLatestRelease()
+                val message = UpdateChecker.checkNow(this)
                 runOnUiThread {
-                    if (release == null) {
-                        statusText.text = "Couldn't reach GitHub. Check your connection."
-                    } else if (UpdateChecker.compareVersions(release.versionName, currentVersion()) > 0) {
-                        statusText.text = "v${release.versionName} available (you're on ${currentVersion()})"
-                        installOrOpen(release, statusText)
-                    } else {
-                        statusText.text = "You're up to date (v${currentVersion()})"
-                    }
+                    statusText.text = message ?: "Update check failed"
                 }
             }.start()
         }
     }
 
-    /** Current installed versionName, e.g. "1.6.23". */
+    /** Current installed versionName, e.g. "1.6.25". */
     private fun currentVersion(): String {
         return try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
         } catch (e: Exception) {
             "?"
         }
-    }
-
-    /**
-     * When an update is available, either download + install directly (if
-     * the release has an APK asset and install-from-source is allowed) or
-     * open the release page.
-     */
-    private fun installOrOpen(release: UpdateChecker.ReleaseInfo, statusText: TextView) {
-        val apkUrl = release.apkUrl
-        if (apkUrl.isNullOrEmpty()) {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl)))
-            return
-        }
-        if (!UpdateChecker.canRequestInstalls(this)) {
-            statusText.text = "Allow installs from this app to auto-update"
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-            } catch (e: Exception) {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl)))
-            }
-            return
-        }
-        statusText.text = "Downloading v${release.versionName}..."
-        Thread {
-            val error = UpdateChecker.downloadAndInstall(this, apkUrl)
-            runOnUiThread {
-                if (error != null) {
-                    statusText.text = "Update failed: $error"
-                } else {
-                    statusText.text = "Installing v${release.versionName}..."
-                }
-            }
-        }.start()
     }
 }

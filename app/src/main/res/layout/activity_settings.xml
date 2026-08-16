@@ -5,20 +5,21 @@
     android:background="#0D0F14"
     android:orientation="vertical">
 
-    <!-- Top bar: back arrow + title -->
+    <!-- Top bar: back arrow + title. Generous top padding so the bar
+         clears the status bar / notch area with breathing room. -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:paddingTop="8dp"
-        android:paddingBottom="8dp">
+        android:paddingTop="32dp"
+        android:paddingBottom="12dp">
 
         <ImageButton
             android:id="@+id/settingsBackButton"
             android:layout_width="48dp"
             android:layout_height="48dp"
-            android:layout_marginStart="8dp"
+            android:layout_marginStart="16dp"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:contentDescription="Back"
             android:src="@android:drawable/ic_menu_revert" />
@@ -26,7 +27,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_marginStart="4dp"
+            android:layout_marginStart="8dp"
             android:text="Settings"
             android:textColor="#E5E7EB"
             android:textSize="22sp"

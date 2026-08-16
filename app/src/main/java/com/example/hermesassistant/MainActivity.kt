@@ -258,9 +258,6 @@ class MainActivity : AppCompatActivity() {
             handleUpdateAction()
         }
 
-        // Silent update check on app start (throttled, non-blocking).
-        checkForUpdatesSilently()
-
         // Notification tap: select the session chip for that notification
         handleTargetSessionIntent(intent)
     }
@@ -406,6 +403,12 @@ class MainActivity : AppCompatActivity() {
         // If the compact overlay was showing (wake word heard while another
         // app was foreground), remove it now that the full app is visible.
         HermesForegroundService.hideOverlayIfShown()
+
+        // Update check on every foreground (throttled to 1h internally).
+        // Runs here rather than onCreate because MainActivity is singleTask
+        // and the foreground service keeps the process alive, so onCreate
+        // fires once per process — onResume fires on every open.
+        UpdateChecker.checkAndNotify(this)
     }
 
     override fun onPause() {
@@ -442,73 +445,6 @@ class MainActivity : AppCompatActivity() {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
         } catch (e: Exception) {
             "?"
-        }
-    }
-
-    /**
-     * Silent check on app start: hit the GitHub releases API in the
-     * background and, if a newer release exists, post an update
-     * notification. Throttled to once per 6h so we don't hammer the API.
-     */
-    private fun checkForUpdatesSilently() {
-        val prefs = getSharedPreferences("updates", Context.MODE_PRIVATE)
-        val last = prefs.getLong("last_check_ms", 0L)
-        if (System.currentTimeMillis() - last < 6 * 60 * 60 * 1000L) return
-        prefs.edit().putLong("last_check_ms", System.currentTimeMillis()).apply()
-
-        Thread {
-            val release = UpdateChecker.fetchLatestRelease() ?: return@Thread
-            if (UpdateChecker.compareVersions(release.versionName, currentVersion()) > 0) {
-                runOnUiThread { postUpdateNotification(release) }
-            }
-        }.start()
-    }
-
-    /** Post a notification offering the newer release, with an Update action. */
-    private fun postUpdateNotification(release: UpdateChecker.ReleaseInfo) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                return // notifications blocked — nothing to show
-            }
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            val channel = NotificationChannel("hermes_updates", "Hermes Updates", NotificationManager.IMPORTANCE_DEFAULT)
-            manager.createNotificationChannel(channel)
-
-            // Tap = open the release page; Update action = download + install
-            val openIntent = Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl))
-            val openPi = PendingIntent.getActivity(
-                this, 31000, openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val updateIntent = Intent(this, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                action = "com.example.hermesassistant.ACTION_UPDATE"
-                putExtra("update_apk_url", release.apkUrl)
-                putExtra("update_version", release.versionName)
-            }
-            val updatePi = PendingIntent.getActivity(
-                this, 31001, updateIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-            )
-            val updateAction = NotificationCompat.Action.Builder(
-                android.R.drawable.ic_menu_save,
-                "Update",
-                updatePi
-            ).build()
-
-            val builder = NotificationCompat.Builder(this, "hermes_updates")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("Hermes Assistant v${release.versionName} available")
-                .setContentText("You're on ${currentVersion()}. Tap Update to download and install.")
-                .setStyle(NotificationCompat.BigTextStyle().bigText("You're on ${currentVersion()}. Tap Update to download and install the new release."))
-                .setAutoCancel(true)
-                .setContentIntent(openPi)
-                .addAction(updateAction)
-            manager.notify(31000, builder.build())
-        } catch (e: Exception) {
-            // Update notification is best-effort
         }
     }
 
