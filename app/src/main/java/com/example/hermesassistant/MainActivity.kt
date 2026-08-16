@@ -1068,11 +1068,23 @@ class MainActivity : AppCompatActivity() {
             replyPendingIntent
         ).addRemoteInput(remoteInput).build()
 
+        // Android Auto support: messaging-style notifications surface in the
+        // car's notification list and enable voice reply through the head
+        // unit. MessagingStyle + CATEGORY_MESSAGE are what make Android Auto
+        // treat this as a conversation; the existing RemoteInput Reply action
+        // carries the spoken reply back through NotificationReplyReceiver.
+        val conversationTitle = if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else ""
+        val senderName = if (host.isNotEmpty()) "Hermes ($host)" else "Hermes"
+        val messagingStyle = NotificationCompat.MessagingStyle("Hermes Assistant")
+            .setConversationTitle(conversationTitle.ifEmpty { null })
+            .addMessage(message, System.currentTimeMillis(), senderName)
+
         val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentTitle(title)
             .setContentText(message + if (host.isNotEmpty()) " (from $host)" else "")
-            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setStyle(messagingStyle)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
             .addAction(replyAction)

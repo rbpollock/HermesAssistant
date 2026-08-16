@@ -166,11 +166,19 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             RemoteInput.Builder(KEY_TEXT_REPLY).setLabel("Reply to Hermes").build()
         ).build()
 
+        // Android Auto: messaging style so the reply chain surfaces in the
+        // car and voice replies work through the head unit. Conversation
+        // title = the session this reply belongs to.
+        val messagingStyle = NotificationCompat.MessagingStyle("Hermes Assistant")
+            .setConversationTitle(sessionTitle.ifEmpty { sessionId.ifEmpty { null } })
+            .addMessage(message, System.currentTimeMillis(), "Hermes")
+
         val builder = NotificationCompat.Builder(context, REPLY_CHANNEL)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setContentTitle(title)
             .setContentText(message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setStyle(messagingStyle)
             .setAutoCancel(true)
             .setContentIntent(pi)
             .addAction(followUpReplyAction)
