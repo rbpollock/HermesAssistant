@@ -63,8 +63,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
     private lateinit var settingsButton: android.widget.ImageButton
     private lateinit var assistantPanel: android.view.View
+    private lateinit var panelCollapseBar: android.view.View
     private lateinit var panelToggleButton: android.widget.ImageButton
+    private lateinit var panelToggleLabel: android.widget.TextView
     private var panelCollapsed = false
+    private var navBarInsetBottom = 0
     private lateinit var notificationManager: NotificationManager
     private lateinit var sessionStore: SessionStore
     private var tts: TextToSpeech? = null
@@ -160,7 +163,9 @@ class MainActivity : AppCompatActivity() {
         sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
         settingsButton = findViewById(R.id.settingsButton)
         assistantPanel = findViewById(R.id.assistantPanel)
+        panelCollapseBar = findViewById(R.id.panelCollapseBar)
         panelToggleButton = findViewById(R.id.panelToggleButton)
+        panelToggleLabel = findViewById(R.id.panelToggleLabel)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
@@ -240,11 +245,15 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
-        // Down/up arrow bar: collapse the listening panel so the chat
+        // Down/up chevron band: collapse the listening panel so the chat
         // (and text input) takes the whole screen; tap again to expand.
-        panelToggleButton.setOnClickListener {
+        // The whole band is tappable (button inside is non-clickable).
+        panelCollapseBar.setOnClickListener {
             togglePanelCollapsed()
         }
+
+        // Make the collapsed band clear the navigation bar from the start.
+        panelCollapseBar.post { updateNavBarInset() }
 
         // Auto-start listening if invoked via the OS Assistant hardware button,
         // the headphone/BT button (VOICE_COMMAND), or our custom action from
@@ -938,8 +947,43 @@ class MainActivity : AppCompatActivity() {
         panelToggleButton.setImageResource(
             if (panelCollapsed) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down
         )
+        panelToggleLabel.text = if (panelCollapsed) "Expand panel" else "Collapse panel"
         panelToggleButton.contentDescription =
             if (panelCollapsed) "Expand assistant panel" else "Collapse assistant panel"
+
+        // When collapsed the band is the bottom-most element — keep it
+        // ABOVE the system navigation bar (gesture zone) so it stays fully
+        // visible and tappable. When expanded the assistant panel sits
+        // below it, so no extra bottom padding is needed.
+        panelCollapseBar.setPadding(
+            panelCollapseBar.paddingLeft,
+            panelCollapseBar.paddingTop,
+            panelCollapseBar.paddingRight,
+            if (panelCollapsed) navBarInsetBottom else 0
+        )
+    }
+
+    /**
+     * Read the current navigation-bar inset so the collapsed band clears
+     * the gesture/soft-button zone. Called after layout and on window
+     * focus changes (the inset can change when the nav bar hides/shows).
+     */
+    private fun updateNavBarInset() {
+        try {
+            val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
+            navBarInsetBottom = insets
+                ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
+                ?.bottom
+                ?: 0
+            applyPanelCollapsed()
+        } catch (e: Exception) {
+            navBarInsetBottom = 0
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) updateNavBarInset()
     }
 
     /** Force the panel back to expanded (e.g. when the user starts speaking). */

@@ -119,25 +119,41 @@
         </LinearLayout>
     </LinearLayout>
 
-    <!-- Collapse/expand bar: the grip at the top of the listening panel.
-         Down arrow collapses the panel (chat takes the space); when
-         collapsed the bar alone remains with an up arrow. -->
+    <!-- Collapse/expand band: the grip above the listening panel.
+         Down chevron collapses the panel (chat fills the screen); when
+         collapsed this band stays at the very bottom, padded above the
+         navigation bar (see applyPanelCollapsed), and shows the up
+         chevron + label to re-expand. The whole band is tappable. -->
     <LinearLayout
         android:id="@+id/panelCollapseBar"
         android:layout_width="match_parent"
-        android:layout_height="40dp"
-        android:background="#0D0F14"
+        android:layout_height="52dp"
+        android:background="#151A24"
+        android:clickable="true"
+        android:focusable="true"
         android:gravity="center"
         android:orientation="horizontal">
 
         <ImageButton
             android:id="@+id/panelToggleButton"
-            android:layout_width="48dp"
-            android:layout_height="40dp"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:clickable="false"
+            android:focusable="false"
             android:background="@drawable/circle_icon_background"
             android:contentDescription="Collapse / expand assistant panel"
-            android:padding="10dp"
+            android:padding="11dp"
             android:src="@drawable/ic_chevron_down" />
+
+        <TextView
+            android:id="@+id/panelToggleLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:fontFamily="sans-serif-medium"
+            android:text="Collapse panel"
+            android:textColor="#E5E7EB"
+            android:textSize="14sp" />
     </LinearLayout>
 
     <!-- Bottom: assistant listening panel. Collapsible via the bar above. -->
