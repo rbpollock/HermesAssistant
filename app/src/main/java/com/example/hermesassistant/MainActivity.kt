@@ -62,6 +62,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sessionChipsRow: LinearLayout
     private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
     private lateinit var settingsButton: android.widget.ImageButton
+    private lateinit var assistantPanel: android.view.View
+    private lateinit var panelToggleButton: android.widget.ImageButton
+    private var panelCollapsed = false
     private lateinit var notificationManager: NotificationManager
     private lateinit var sessionStore: SessionStore
     private var tts: TextToSpeech? = null
@@ -156,6 +159,8 @@ class MainActivity : AppCompatActivity() {
         sessionChipsRow = findViewById(R.id.sessionChipsRow)
         sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
         settingsButton = findViewById(R.id.settingsButton)
+        assistantPanel = findViewById(R.id.assistantPanel)
+        panelToggleButton = findViewById(R.id.panelToggleButton)
         notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
@@ -233,6 +238,12 @@ class MainActivity : AppCompatActivity() {
         // Gear icon (top-left): open settings
         settingsButton.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
+        }
+
+        // Down/up arrow bar: collapse the listening panel so the chat
+        // (and text input) takes the whole screen; tap again to expand.
+        panelToggleButton.setOnClickListener {
+            togglePanelCollapsed()
         }
 
         // Auto-start listening if invoked via the OS Assistant hardware button,
@@ -378,6 +389,10 @@ class MainActivity : AppCompatActivity() {
         // we were in the background — pick them up now.
         chatHistory.reload()
         renderHistory()
+
+        // If the compact overlay was showing (wake word heard while another
+        // app was foreground), remove it now that the full app is visible.
+        HermesForegroundService.hideOverlayIfShown()
     }
 
     override fun onPause() {
@@ -423,6 +438,7 @@ class MainActivity : AppCompatActivity() {
     /** Tell the service to transcribe the next phrase (offline dictation). */
     private fun startOfflineDictation() {
         dictationMode = true
+        expandPanel()
         speakButton.text = "TAP TO CANCEL"
         setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
         HermesForegroundService.startDictation()
@@ -453,6 +469,7 @@ class MainActivity : AppCompatActivity() {
     /** The service heard "Hey Hermes" — take over from the wake word. */
     private fun onWakeWordHeard() {
         runOnUiThread {
+            expandPanel()
             speakButton.text = "TAP TO SPEAK TO HERMES"
             if (isConnected) startListening() else startOfflineDictation()
         }
@@ -758,6 +775,31 @@ class MainActivity : AppCompatActivity() {
         return if (sessionId.length > 12) "…${sessionId.takeLast(10)}" else sessionId
     }
 
+    // ------------------------------------------------------------------
+    // Session color-coding: every session gets a stable, deterministic
+    // color (picked from a dark-theme-friendly palette by hashing the
+    // session id) so chips and bubbles are visually distinguishable.
+    // ------------------------------------------------------------------
+    private val sessionPalette = intArrayOf(
+        0xFF60A5FA.toInt(), // blue
+        0xFF34D399.toInt(), // green
+        0xFFFBBF24.toInt(), // amber
+        0xFFF472B6.toInt(), // pink
+        0xFFA78BFA.toInt(), // violet
+        0xFF22D3EE.toInt(), // cyan
+        0xFFFB923C.toInt(), // orange
+        0xFF4ADE80.toInt(), // light green
+        0xFFF87171.toInt(), // red
+        0xFFE879F9.toInt(), // fuchsia
+    )
+
+    /** Stable per-session color; empty session (daily chat) gets neutral. */
+    private fun sessionColor(sessionId: String): Int {
+        if (sessionId.isEmpty()) return 0xFF60A5FA.toInt() // default blue
+        val idx = (sessionId.hashCode() and 0x7fffffff) % sessionPalette.size
+        return sessionPalette[idx]
+    }
+
     /** Render the horizontal session chips; the selected one is highlighted. */
     private fun renderSessionChips() {
         sessionChipsRow.removeAllViews()
@@ -765,14 +807,15 @@ class MainActivity : AppCompatActivity() {
 
         sessionStore.sessions.forEach { session ->
             val isSelected = session.id == replySessionId
+            val color = sessionColor(session.id)
             val chip = TextView(this).apply {
                 text = session.title
                 textSize = 12f
-                setTextColor(if (isSelected) 0xFF0B1220.toInt() else 0xFFE5E7EB.toInt())
+                setTextColor(if (isSelected) 0xFF0B1220.toInt() else color)
                 setPadding(dp(14), dp(8), dp(14), dp(8))
                 isClickable = true
                 isFocusable = true
-                background = chipBackground(isSelected)
+                background = chipBackground(isSelected, color)
                 setOnClickListener {
                     if (replySessionId == session.id) {
                         // Tap again to untarget (back to default daily session)
@@ -809,13 +852,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun chipBackground(selected: Boolean) = GradientDrawable().apply {
+    private fun chipBackground(selected: Boolean, color: Int) = GradientDrawable().apply {
         cornerRadius = dp(16).toFloat()
         if (selected) {
-            setColor(0xFF60A5FA.toInt())
+            setColor(color)
         } else {
             setColor(0xFF1E293B.toInt())
-            setStroke(dp(1), 0xFF334155.toInt())
+            setStroke(dp(1), color)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Sliding panel: collapse/expand the bottom listening panel.
+    // Collapsed = chat fills the screen (text input stays visible above
+    // the keyboard via adjustResize); the arrow bar flips direction.
+    // ------------------------------------------------------------------
+    private fun togglePanelCollapsed() {
+        panelCollapsed = !panelCollapsed
+        applyPanelCollapsed()
+    }
+
+    private fun applyPanelCollapsed() {
+        assistantPanel.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
+        panelToggleButton.setImageResource(
+            if (panelCollapsed) android.R.drawable.arrow_up_float else android.R.drawable.arrow_down_float
+        )
+        panelToggleButton.contentDescription =
+            if (panelCollapsed) "Expand assistant panel" else "Collapse assistant panel"
+    }
+
+    /** Force the panel back to expanded (e.g. when the user starts speaking). */
+    private fun expandPanel() {
+        if (panelCollapsed) {
+            panelCollapsed = false
+            applyPanelCollapsed()
         }
     }
 
@@ -1102,6 +1172,7 @@ class MainActivity : AppCompatActivity() {
     private fun startListening() {
         // Free the mic: stop the service's wake word before Google STT.
         stopWakeWordForStt()
+        expandPanel()
 
         // The AudioRecord release takes a moment to propagate through the
         // audio HAL; starting STT immediately can fail with ERROR_AUDIO.
@@ -1269,12 +1340,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun addBubble(m: ChatMessage) {
         val bubbleMaxWidth = (resources.displayMetrics.widthPixels * 0.8f).toInt()
+        val sessionAccent = sessionColor(m.sessionId)
         val tv = TextView(this).apply {
             text = m.text + if (m.queued) "\n\u23F3 queued (offline)" else ""
             textSize = 14f
             setTextColor(0xFFE5E7EB.toInt())
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            maxWidth = bubbleMaxWidth
+            maxWidth = bubbleMaxWidth - dp(10) // leave room for the accent bar
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -1308,7 +1380,39 @@ class MainActivity : AppCompatActivity() {
             }
         }
         tv.background = bg
-        historyList.addView(tv, lp)
+
+        // Session color accent: a thin vertical strip on the leading edge
+        // so you can tell which session each message belongs to at a glance.
+        val accent = View(this).apply {
+            background = GradientDrawable().apply {
+                cornerRadius = dp(3).toFloat()
+                setColor(sessionAccent)
+            }
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = when (m.role) {
+                "user" -> android.view.Gravity.END
+                "hermes" -> android.view.Gravity.START
+                else -> android.view.Gravity.CENTER
+            }
+        }
+        // For centered notify rows the accent bar is omitted (they're
+        // already visually distinct); for user/hermes rows it sits on the
+        // leading edge (left for hermes, right for user).
+        if (m.role != "notify") {
+            val accentLp = LinearLayout.LayoutParams(dp(4), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                topMargin = dp(6)
+                bottomMargin = dp(6)
+                if (m.role == "user") marginStart = dp(6) else marginEnd = dp(6)
+            }
+            row.addView(accent, accentLp)
+        }
+        row.addView(tv)
+        historyList.addView(row, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(2) })
     }
 
     /**

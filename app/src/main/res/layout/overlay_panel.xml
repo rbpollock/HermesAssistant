@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Compact "over other apps" overlay shown when the assistant is
+     activated while another app is in the foreground. Sits in the
+     bottom third of the screen; the up-arrow bar at the top expands to
+     the full app. Managed by HermesForegroundService via WindowManager. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/overlayRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#E60D0F14"
+    android:orientation="vertical">
+
+    <!-- Expand bar: up arrow + label. Tapping expands to full screen. -->
+    <LinearLayout
+        android:id="@+id/overlayExpandBar"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:background="#1E293B"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <ImageView
+            android:id="@+id/overlayExpandIcon"
+            android:layout_width="20dp"
+            android:layout_height="20dp"
+            android:contentDescription="Expand"
+            android:src="@android:drawable/arrow_up_float"
+            android:tint="#E5E7EB" />
+
+        <TextView
+            android:id="@+id/overlayExpandLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:fontFamily="sans-serif-medium"
+            android:text="Expand"
+            android:textColor="#E5E7EB"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <!-- Compact assistant content -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/overlayStatusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:fontFamily="sans-serif-medium"
+            android:gravity="center"
+            android:maxLines="2"
+            android:text="Hermes Assistant"
+            android:textColor="#E5E7EB"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/overlaySubText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:gravity="center"
+            android:text="Listening for &quot;Hey Hermes&quot;"
+            android:textColor="#8B93A7"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/overlaySpeakButton"
+            android:layout_width="match_parent"
+            android:layout_height="44dp"
+            android:layout_marginTop="12dp"
+            android:backgroundTint="#1E293B"
+            android:text="TAP TO SPEAK TO HERMES"
+            android:textColor="#E5E7EB"
+            android:textSize="13sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

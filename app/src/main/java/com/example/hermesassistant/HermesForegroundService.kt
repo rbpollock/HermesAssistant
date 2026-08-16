@@ -9,6 +9,7 @@ import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.vosk.Model
@@ -96,6 +97,11 @@ class HermesForegroundService : Service(), RecognitionListener {
             }
         }
 
+        /** Hide the compact overlay when the full activity comes forward. */
+        fun hideOverlayIfShown() {
+            instance?.hideOverlay()
+        }
+
         private fun command(action: String) {
             val ctx = appContext ?: return
             val i = Intent(ctx, HermesForegroundService::class.java).setAction(action)
@@ -109,6 +115,13 @@ class HermesForegroundService : Service(), RecognitionListener {
     private var voskService: SpeechService? = null
     private var dictationMode = false
     private var micPermissionGranted = false
+
+    // "Over other apps" compact panel (bottom third). Shown when the
+    // wake word fires while another app is foreground; tapping it
+    // expands to the full MainActivity.
+    private var overlayView: android.view.View? = null
+    private var overlayStatusText: android.widget.TextView? = null
+    private var overlaySubText: android.widget.TextView? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -160,6 +173,7 @@ class HermesForegroundService : Service(), RecognitionListener {
             // is heard or stopWakeWord() is called.
             voskService?.startListening(this)
             updateNotification("Listening for \"Hey Hermes\"")
+            updateOverlayStatus("Listening for \"Hey Hermes\"", "Say \"Hey Hermes\" or tap to open")
         } catch (e: Exception) {
             updateNotification("Vosk error: ${e.message?.take(60)}")
         }
@@ -191,6 +205,7 @@ class HermesForegroundService : Service(), RecognitionListener {
             // Long outer cap so a mid-thought pause doesn't cut the phrase.
             voskService?.startListening(this, DICTATION_TIMEOUT_MS)
             updateNotification("Dictating (offline)")
+            updateOverlayStatus("Dictating (offline)", "Speak — your words will be queued")
         } catch (e: Exception) {
             updateNotification("Vosk error: ${e.message?.take(60)}")
         }
@@ -301,10 +316,19 @@ class HermesForegroundService : Service(), RecognitionListener {
     private fun wakeWordHeard() {
         stopVoskService()
         updateNotification("Wake word heard")
-        // Launch the activity into listening mode. This works from the
-        // background (the whole point of owning Vosk here) — MainActivity's
-        // onCreate/onNewIntent sees the START_LISTENING action and starts
-        // Google STT (online) or dictation (offline).
+        // Prefer the compact overlay (bottom third over other apps) when we
+        // have draw-over permission; tapping it expands to the full app.
+        // Fall back to launching the activity directly when the permission
+        // hasn't been granted.
+        if (Settings.canDrawOverlays(this)) {
+            showOverlay()
+        } else {
+            launchMainActivity()
+        }
+    }
+
+    /** Launch the full MainActivity into listening mode. */
+    private fun launchMainActivity() {
         val launch = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             action = "com.example.hermesassistant.START_LISTENING"
@@ -319,6 +343,71 @@ class HermesForegroundService : Service(), RecognitionListener {
             )
         }
     }
+
+    // --- Compact overlay (bottom third, over other apps) ---
+
+    private fun showOverlay() {
+        hideOverlay()
+        try {
+            val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+            val inflater = getSystemService(android.content.Context.LAYOUT_INFLATER_SERVICE) as android.view.LayoutInflater
+            val view = inflater.inflate(R.layout.overlay_panel, null)
+            overlayView = view
+            overlayStatusText = view.findViewById(R.id.overlayStatusText)
+            overlaySubText = view.findViewById(R.id.overlaySubText)
+
+            val expand = view.findViewById<android.view.View>(R.id.overlayExpandBar)
+            expand.setOnClickListener { expandFromOverlay() }
+            view.findViewById<android.view.View>(R.id.overlaySpeakButton).setOnClickListener {
+                expandFromOverlay()
+            }
+
+            // Bottom third of the screen
+            val dm = resources.displayMetrics
+            val height = (dm.heightPixels / 3).coerceAtLeast(dp(220))
+            val params = android.view.WindowManager.LayoutParams(
+                android.view.WindowManager.LayoutParams.MATCH_PARENT,
+                height,
+                android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                android.graphics.PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = android.view.Gravity.BOTTOM
+            }
+            wm.addView(view, params)
+            updateOverlayStatus("Wake word heard", "Tap to open and speak")
+        } catch (e: Exception) {
+            overlayView = null
+            // Overlay failed — just launch the activity instead
+            launchMainActivity()
+        }
+    }
+
+    private fun hideOverlay() {
+        val view = overlayView ?: return
+        overlayView = null
+        overlayStatusText = null
+        overlaySubText = null
+        try {
+            val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
+            wm.removeView(view)
+        } catch (e: Exception) {
+            // Already removed
+        }
+    }
+
+    private fun expandFromOverlay() {
+        hideOverlay()
+        launchMainActivity()
+    }
+
+    private fun updateOverlayStatus(status: String, sub: String) {
+        overlayStatusText?.text = status
+        overlaySubText?.text = sub
+    }
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // --- Foreground notification ---
     private fun startAsForeground() {
@@ -370,6 +459,7 @@ class HermesForegroundService : Service(), RecognitionListener {
 
     override fun onDestroy() {
         stopVoskService()
+        hideOverlay()
         setInstance(null)
         super.onDestroy()
     }

@@ -5,8 +5,10 @@
     android:background="#0D0F14"
     android:orientation="vertical">
 
-    <!-- Top half: session chips + scrollable chat history -->
+    <!-- Top: session chips + scrollable chat history (expands when the
+         listening panel below is collapsed). -->
     <LinearLayout
+        android:id="@+id/chatSection"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -75,11 +77,72 @@
                 android:paddingEnd="16dp"
                 android:paddingBottom="8dp" />
         </ScrollView>
+
+        <!-- Text input row: lives at the BOTTOM of the chat section so it
+             is always visible above the keyboard (activity uses
+             adjustResize). Toggled by the keyboard icon; when the
+             listening panel is collapsed this is the primary input. -->
+        <LinearLayout
+            android:id="@+id/textInputRow"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:paddingBottom="8dp"
+            android:visibility="gone">
+
+            <EditText
+                android:id="@+id/textInput"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:background="@drawable/text_input_background"
+                android:hint="Type a message..."
+                android:imeOptions="actionSend"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="#E5E7EB"
+                android:textColorHint="#8B93A7"
+                android:textSize="14sp" />
+
+            <ImageButton
+                android:id="@+id/sendButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginStart="8dp"
+                android:backgroundTint="#1E293B"
+                android:contentDescription="Send message"
+                android:src="@android:drawable/ic_menu_send" />
+        </LinearLayout>
     </LinearLayout>
 
-    <!-- Bottom half: assistant panel. FrameLayout so the circular keyboard
-         icon can float at the top-right. -->
+    <!-- Collapse/expand bar: the grip at the top of the listening panel.
+         Down arrow collapses the panel (chat takes the space); when
+         collapsed the bar alone remains with an up arrow. -->
+    <LinearLayout
+        android:id="@+id/panelCollapseBar"
+        android:layout_width="match_parent"
+        android:layout_height="40dp"
+        android:background="#0D0F14"
+        android:gravity="center"
+        android:orientation="horizontal">
+
+        <ImageButton
+            android:id="@+id/panelToggleButton"
+            android:layout_width="48dp"
+            android:layout_height="40dp"
+            android:background="@drawable/circle_icon_background"
+            android:contentDescription="Collapse / expand assistant panel"
+            android:padding="10dp"
+            android:src="@android:drawable/arrow_down_float" />
+    </LinearLayout>
+
+    <!-- Bottom: assistant listening panel. Collapsible via the bar above. -->
     <FrameLayout
+        android:id="@+id/assistantPanel"
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
@@ -131,45 +194,9 @@
                 android:textColor="#E5E7EB"
                 android:textSize="14sp"
                 android:textStyle="bold" />
-
-            <!-- Text input row: hidden by default, toggled only by the
-                 circular keyboard icon -->
-            <LinearLayout
-                android:id="@+id/textInputRow"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:orientation="horizontal"
-                android:visibility="gone">
-
-                <EditText
-                    android:id="@+id/textInput"
-                    android:layout_width="0dp"
-                    android:layout_height="48dp"
-                    android:layout_weight="1"
-                    android:background="@drawable/text_input_background"
-                    android:hint="Type a message..."
-                    android:imeOptions="actionSend"
-                    android:inputType="text"
-                    android:maxLines="1"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp"
-                    android:textColor="#E5E7EB"
-                    android:textColorHint="#8B93A7"
-                    android:textSize="14sp" />
-
-                <ImageButton
-                    android:id="@+id/sendButton"
-                    android:layout_width="48dp"
-                    android:layout_height="48dp"
-                    android:layout_marginStart="8dp"
-                    android:backgroundTint="#1E293B"
-                    android:contentDescription="Send message"
-                    android:src="@android:drawable/ic_menu_send" />
-            </LinearLayout>
         </LinearLayout>
 
-        <!-- Circular keyboard icon, top-right of the bottom section.
+        <!-- Circular keyboard icon, top-right of the assistant panel.
              Sized to ~12% of screen width in code. -->
         <ImageButton
             android:id="@+id/typeToggleButton"
@@ -183,7 +210,7 @@
             android:padding="12dp"
             android:src="@android:drawable/ic_menu_edit" />
 
-        <!-- Gear icon, top-left of the bottom section (opposite the
+        <!-- Gear icon, top-left of the assistant panel (opposite the
              keyboard icon): opens settings. Same size as the keyboard icon. -->
         <ImageButton
             android:id="@+id/settingsButton"
