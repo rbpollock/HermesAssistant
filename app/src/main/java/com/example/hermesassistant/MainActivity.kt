@@ -253,6 +253,14 @@ class MainActivity : AppCompatActivity() {
             if (isConnected) startListening() else startOfflineDictation()
         }
 
+        // Auto-update: the "Update" notification action lands here.
+        if (isUpdateAction(intent?.action)) {
+            handleUpdateAction()
+        }
+
+        // Silent update check on app start (throttled, non-blocking).
+        checkForUpdatesSilently()
+
         // Notification tap: select the session chip for that notification
         handleTargetSessionIntent(intent)
     }
@@ -262,6 +270,11 @@ class MainActivity : AppCompatActivity() {
         return action == Intent.ACTION_ASSIST
             || action == Intent.ACTION_VOICE_COMMAND
             || action == "com.example.hermesassistant.START_LISTENING"
+    }
+
+    /** Auto-update notification action: "Update" on the update notification. */
+    private fun isUpdateAction(action: String?): Boolean {
+        return action == "com.example.hermesassistant.ACTION_UPDATE"
     }
 
     /**
@@ -417,6 +430,118 @@ class MainActivity : AppCompatActivity() {
                 setStatus("Enable notifications in system settings", StatusRingView.State.IDLE)
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Auto-update (GitHub releases)
+    // ------------------------------------------------------------------
+
+    /** Current installed versionName, e.g. "1.6.23". */
+    private fun currentVersion(): String {
+        return try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+        } catch (e: Exception) {
+            "?"
+        }
+    }
+
+    /**
+     * Silent check on app start: hit the GitHub releases API in the
+     * background and, if a newer release exists, post an update
+     * notification. Throttled to once per 6h so we don't hammer the API.
+     */
+    private fun checkForUpdatesSilently() {
+        val prefs = getSharedPreferences("updates", Context.MODE_PRIVATE)
+        val last = prefs.getLong("last_check_ms", 0L)
+        if (System.currentTimeMillis() - last < 6 * 60 * 60 * 1000L) return
+        prefs.edit().putLong("last_check_ms", System.currentTimeMillis()).apply()
+
+        Thread {
+            val release = UpdateChecker.fetchLatestRelease() ?: return@Thread
+            if (UpdateChecker.compareVersions(release.versionName, currentVersion()) > 0) {
+                runOnUiThread { postUpdateNotification(release) }
+            }
+        }.start()
+    }
+
+    /** Post a notification offering the newer release, with an Update action. */
+    private fun postUpdateNotification(release: UpdateChecker.ReleaseInfo) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return // notifications blocked — nothing to show
+            }
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channel = NotificationChannel("hermes_updates", "Hermes Updates", NotificationManager.IMPORTANCE_DEFAULT)
+            manager.createNotificationChannel(channel)
+
+            // Tap = open the release page; Update action = download + install
+            val openIntent = Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl))
+            val openPi = PendingIntent.getActivity(
+                this, 31000, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val updateIntent = Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                action = "com.example.hermesassistant.ACTION_UPDATE"
+                putExtra("update_apk_url", release.apkUrl)
+                putExtra("update_version", release.versionName)
+            }
+            val updatePi = PendingIntent.getActivity(
+                this, 31001, updateIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            val updateAction = NotificationCompat.Action.Builder(
+                android.R.drawable.ic_menu_save,
+                "Update",
+                updatePi
+            ).build()
+
+            val builder = NotificationCompat.Builder(this, "hermes_updates")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Hermes Assistant v${release.versionName} available")
+                .setContentText("You're on ${currentVersion()}. Tap Update to download and install.")
+                .setStyle(NotificationCompat.BigTextStyle().bigText("You're on ${currentVersion()}. Tap Update to download and install the new release."))
+                .setAutoCancel(true)
+                .setContentIntent(openPi)
+                .addAction(updateAction)
+            manager.notify(31000, builder.build())
+        } catch (e: Exception) {
+            // Update notification is best-effort
+        }
+    }
+
+    /** Handle the "Update" action: download the APK and hand to the installer. */
+    private fun handleUpdateAction() {
+        val apkUrl = intent.getStringExtra("update_apk_url").orEmpty()
+        if (apkUrl.isEmpty()) {
+            // No direct APK asset — just open the release page
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            return
+        }
+        if (!UpdateChecker.canRequestInstalls(this)) {
+            // Android 8+: installing from "unknown sources" needs a one-time
+            // per-source grant. Take the user to that settings screen.
+            setStatus("Allow installs from this app, then retry", StatusRingView.State.IDLE)
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            }
+            return
+        }
+        setStatus("Downloading update...", StatusRingView.State.LISTENING)
+        Thread {
+            val error = UpdateChecker.downloadAndInstall(this, apkUrl)
+            runOnUiThread {
+                if (error != null) {
+                    setStatus("Update failed: $error", StatusRingView.State.IDLE)
+                } else {
+                    setStatus("Installing update...", StatusRingView.State.LISTENING)
+                }
+            }
+        }.start()
     }
 
     // ------------------------------------------------------------------
@@ -1164,6 +1289,11 @@ class MainActivity : AppCompatActivity() {
         // Auto-start listening if invoked while the app is already open in the background
         if (isVoiceInvocation(intent.action)) {
             if (isConnected) startListening() else startOfflineDictation()
+        }
+        // Auto-update: the "Update" notification action lands here too
+        // (the app may already be running when the user taps it).
+        if (isUpdateAction(intent.action)) {
+            handleUpdateAction()
         }
         // Notification tap: select the session chip for that notification
         handleTargetSessionIntent(intent)

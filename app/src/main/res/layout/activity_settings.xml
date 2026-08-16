@@ -3,91 +3,167 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0D0F14"
-    android:orientation="vertical"
-    android:padding="24dp">
+    android:orientation="vertical">
 
-    <TextView
+    <!-- Top bar: back arrow + title -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:paddingBottom="20dp"
-        android:text="Settings"
-        android:textColor="#E5E7EB"
-        android:textSize="24sp"
-        android:textStyle="bold" />
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp">
 
-    <TextView
+        <ImageButton
+            android:id="@+id/settingsBackButton"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:layout_marginStart="8dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Back"
+            android:src="@android:drawable/ic_menu_revert" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:text="Settings"
+            android:textColor="#E5E7EB"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <ScrollView
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingBottom="6dp"
-        android:text="Home server"
-        android:textColor="#8B93A7"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingBottom="12dp"
-        android:text="IP address or hostname of the Hermes relay server (e.g. 100.123.127.108)"
-        android:textColor="#6B7280"
-        android:textSize="12sp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingBottom="24dp">
 
-    <EditText
-        android:id="@+id/settingsHostInput"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:background="@drawable/text_input_background"
-        android:hint="Host (e.g. 100.123.127.108)"
-        android:inputType="text"
-        android:maxLines="1"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:textColor="#E5E7EB"
-        android:textColorHint="#8B93A7"
-        android:textSize="14sp" />
+            <!-- App info -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="8dp"
+                android:paddingBottom="6dp"
+                android:text="About"
+                android:textColor="#8B93A7"
+                android:textSize="13sp"
+                android:textStyle="bold" />
 
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:paddingTop="16dp"
-        android:paddingBottom="6dp"
-        android:text="Port"
-        android:textColor="#8B93A7"
-        android:textSize="13sp"
-        android:textStyle="bold" />
+            <TextView
+                android:id="@+id/settingsVersionText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="4dp"
+                android:textColor="#E5E7EB"
+                android:textSize="14sp" />
 
-    <EditText
-        android:id="@+id/settingsPortInput"
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:background="@drawable/text_input_background"
-        android:hint="Port (e.g. 8000)"
-        android:inputType="number"
-        android:maxLines="1"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
-        android:textColor="#E5E7EB"
-        android:textColorHint="#8B93A7"
-        android:textSize="14sp" />
+            <TextView
+                android:id="@+id/settingsGithubLink"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="4dp"
+                android:paddingBottom="16dp"
+                android:text="View on GitHub"
+                android:textColor="#60A5FA"
+                android:textSize="14sp" />
 
-    <Button
-        android:id="@+id/settingsSaveButton"
-        android:layout_width="match_parent"
-        android:layout_height="52dp"
-        android:layout_marginTop="24dp"
-        android:backgroundTint="#1E293B"
-        android:text="SAVE"
-        android:textColor="#E5E7EB"
-        android:textSize="14sp"
-        android:textStyle="bold" />
+            <!-- Home server -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="6dp"
+                android:text="Home server"
+                android:textColor="#8B93A7"
+                android:textSize="13sp"
+                android:textStyle="bold" />
 
-    <TextView
-        android:id="@+id/settingsStatus"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="16dp"
-        android:gravity="center"
-        android:textColor="#10B981"
-        android:textSize="13sp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingBottom="12dp"
+                android:text="IP address or hostname of the Hermes relay server (e.g. 100.123.127.108)"
+                android:textColor="#6B7280"
+                android:textSize="12sp" />
 
+            <EditText
+                android:id="@+id/settingsHostInput"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/text_input_background"
+                android:hint="Host (e.g. 100.123.127.108)"
+                android:inputType="text"
+                android:maxLines="1"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="#E5E7EB"
+                android:textColorHint="#8B93A7"
+                android:textSize="14sp" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="16dp"
+                android:paddingBottom="6dp"
+                android:text="Port"
+                android:textColor="#8B93A7"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+            <EditText
+                android:id="@+id/settingsPortInput"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/text_input_background"
+                android:hint="Port (e.g. 8000)"
+                android:inputType="number"
+                android:maxLines="1"
+                android:paddingStart="16dp"
+                android:paddingEnd="16dp"
+                android:textColor="#E5E7EB"
+                android:textColorHint="#8B93A7"
+                android:textSize="14sp" />
+
+            <Button
+                android:id="@+id/settingsSaveButton"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_marginTop="24dp"
+                android:backgroundTint="#1E293B"
+                android:text="SAVE"
+                android:textColor="#E5E7EB"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/settingsStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:gravity="center"
+                android:textColor="#10B981"
+                android:textSize="13sp" />
+
+            <!-- Manual update check -->
+            <Button
+                android:id="@+id/settingsCheckUpdateButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="24dp"
+                android:backgroundTint="#111827"
+                android:text="CHECK FOR UPDATES"
+                android:textColor="#93C5FD"
+                android:textSize="13sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+    </ScrollView>
 </LinearLayout>

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider paths for the auto-update APK download. The downloaded
+     APK lives in filesDir/apk-updates/ and is exposed to the system
+     installer via the FileProvider URI. -->
+<paths>
+    <files-path
+        name="apk_updates"
+        path="apk-updates/" />
+</paths>
