@@ -123,12 +123,14 @@
          Down chevron collapses the panel (chat fills the screen); when
          collapsed this band stays at the very bottom, padded above the
          navigation bar (see applyPanelCollapsed), and shows the up
-         chevron + label to re-expand. The whole band is tappable. -->
+         chevron + label to re-expand. The whole band is tappable.
+         Background matches the overlay's expand bar (#1E293B) so the
+         band is clearly visible against the page background. -->
     <LinearLayout
         android:id="@+id/panelCollapseBar"
         android:layout_width="match_parent"
         android:layout_height="52dp"
-        android:background="#151A24"
+        android:background="#1E293B"
         android:clickable="true"
         android:focusable="true"
         android:gravity="center"
