@@ -2,9 +2,33 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-// Single source of truth for the app version. Bump here on each release;
-// it feeds both the Android versionName and the built APK filename.
-val appVersionName = "1.6.16"
+// ------------------------------------------------------------------
+// Version from git tags (single source of truth = release tags).
+// The latest tag (e.g. "v1.6.21") becomes versionName "1.6.21" and
+// the APK filename HermesAssistant-v1.6.21.apk; versionCode is
+// derived from the numeric parts (1*10000 + 6*100 + 21 = 10621) so it
+// strictly increases with every release.
+//
+// Uses `git tag --sort=-v:refname` (VERSION sort, newest first) NOT
+// `git describe`, which picks the lexicographically-first tag when
+// several point at the same commit ("v1.6.21" < "v1.6.99-test").
+// providers.exec keeps this config-cache compatible (Gradle 9 forbids
+// raw ProcessBuilder at configuration time).
+// ------------------------------------------------------------------
+val appVersionName = providers.exec {
+    commandLine("git", "tag", "--sort=-v:refname")
+}.standardOutput.asText.get()
+    .lineSequence()
+    .firstOrNull { it.isNotBlank() }
+    ?.trim()
+    ?.removePrefix("v")
+    ?: "0.0.0"
+
+val appVersionCode = run {
+    val parts = appVersionName.split(".").mapNotNull { it.toIntOrNull() }
+    if (parts.size >= 3) parts[0] * 10000 + parts[1] * 100 + parts[2]
+    else 1
+}
 
 android {
     namespace = "com.example.hermesassistant"
@@ -18,7 +42,7 @@ android {
         applicationId = "com.example.hermesassistant"
         minSdk = 24
         targetSdk = 36
-        versionCode = 16
+        versionCode = appVersionCode
         versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
