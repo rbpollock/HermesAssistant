@@ -1,9 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- FileProvider paths for the auto-update APK download. The downloaded
-     APK lives in filesDir/apk-updates/ and is exposed to the system
-     installer via the FileProvider URI. -->
+     APK lives in the app's external files dir (getExternalFilesDir ->
+     /storage/emulated/0/Android/data/<pkg>/files/apk-updates/) and is
+     exposed to the system installer via the FileProvider URI.
+
+     BOTH roots are declared: external-files-path matches where the
+     downloader writes, files-path is the internal fallback. -->
 <paths>
-    <files-path
+    <external-files-path
         name="apk_updates"
+        path="apk-updates/" />
+    <files-path
+        name="apk_updates_internal"
         path="apk-updates/" />
 </paths>
