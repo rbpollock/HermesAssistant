@@ -771,7 +771,7 @@ class MainActivity : AppCompatActivity() {
         chatHistory.append(
             ChatMessage(
                 "notify",
-                "$title — $message",
+                message,
                 sessionId = sessionId,
                 sessionTitle = if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else "",
             )
@@ -1479,14 +1479,16 @@ class MainActivity : AppCompatActivity() {
         val bg = GradientDrawable().apply {
             cornerRadius = dp(14).toFloat()
         }
+        // More breathing room between bubbles.
         val lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(6) }
+        ).apply { topMargin = dp(10) }
 
         when (m.role) {
             "user" -> {
-                bg.setColor(if (m.queued) 0xFF3B2F1A.toInt() else 0xFF1D4ED8.toInt())
+                // Darker fill so the session-colored border actually stands out.
+                bg.setColor(if (m.queued) 0xFF3B2F1A.toInt() else 0xFF16233D.toInt())
                 lp.gravity = android.view.Gravity.END
             }
             "hermes" -> {
@@ -1500,14 +1502,11 @@ class MainActivity : AppCompatActivity() {
                 tv.textSize = 13f
             }
         }
-        // Session color border: the bubble outline matches the session it
-        // belongs to (same color as the chip), so messages are attributable
-        // at a glance. Notify rows keep their neutral look.
-        if (m.role != "notify") {
-            bg.setStroke(dp(2), sessionAccent)
-        } else {
-            bg.setStroke(dp(1), 0xFF334155.toInt())
-        }
+        // Session color border on EVERY bubble (user, hermes, and notify —
+        // notify rows carry session_id too), so the whole history is
+        // color-coded consistently with the chips. 2dp for chat rows, 1dp
+        // for the slimmer notify rows.
+        bg.setStroke(if (m.role == "notify") dp(1) else dp(2), sessionAccent)
         tv.background = bg
         historyList.addView(tv, lp)
     }
