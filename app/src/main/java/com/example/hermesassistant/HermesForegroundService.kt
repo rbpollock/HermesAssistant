@@ -227,11 +227,15 @@ class HermesForegroundService : Service(), RecognitionListener {
     }
 
     // --- RecognitionListener (wake word mode) ---
+    // NOTE: only onResult (the FINAL, silence-confirmed hypothesis) may
+    // trigger the wake word. onPartialResult hypotheses are speculative —
+    // with the constrained grammar the recognizer can emit a partial
+    // "hey hermes" for phonetically-similar speech ("hey Herman", "hey
+    // H", TV/background noise), which caused false activations.
+
     override fun onPartialResult(hypothesis: String?) {
-        if (dictationMode) return
-        if (hypothesis?.contains("hey hermes") == true) {
-            wakeWordHeard()
-        }
+        // Never trigger from a partial. Wake word fires only on the final
+        // confirmed result, so background speech can't accidentally wake it.
     }
 
     override fun onResult(hypothesis: String?) {
@@ -250,8 +254,23 @@ class HermesForegroundService : Service(), RecognitionListener {
             startWakeWordNow()
             return
         }
-        if (hypothesis?.contains("hey hermes") == true) {
+        if (isWakeWordMatch(hypothesis)) {
             wakeWordHeard()
+        }
+    }
+
+    /** True when the final hypothesis is exactly the wake phrase. */
+    private fun isWakeWordMatch(hypothesis: String?): Boolean {
+        if (hypothesis.isNullOrBlank()) return false
+        // Vosk final result is JSON: {"text": "..."} — parse the text field
+        // and compare against the phrase (case-insensitive, trimmed).
+        return try {
+            val text = org.json.JSONObject(hypothesis).optString("text", "").trim()
+            text.equals("hey hermes", ignoreCase = true)
+        } catch (e: Exception) {
+            // Not JSON (shouldn't happen for a final result) — fall back to
+            // a plain substring check on the raw string.
+            hypothesis.lowercase().contains("hey hermes")
         }
     }
 
