@@ -137,7 +137,7 @@
             android:background="@drawable/circle_icon_background"
             android:contentDescription="Collapse / expand assistant panel"
             android:padding="10dp"
-            android:src="@android:drawable/arrow_down_float" />
+            android:src="@drawable/ic_chevron_down" />
     </LinearLayout>
 
     <!-- Bottom: assistant listening panel. Collapsible via the bar above. -->

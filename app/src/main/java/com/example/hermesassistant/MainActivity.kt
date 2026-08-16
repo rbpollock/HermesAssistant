@@ -1000,7 +1000,7 @@ class MainActivity : AppCompatActivity() {
     private fun applyPanelCollapsed() {
         assistantPanel.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
         panelToggleButton.setImageResource(
-            if (panelCollapsed) android.R.drawable.arrow_up_float else android.R.drawable.arrow_down_float
+            if (panelCollapsed) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down
         )
         panelToggleButton.contentDescription =
             if (panelCollapsed) "Expand assistant panel" else "Collapse assistant panel"
@@ -1476,7 +1476,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 14f
             setTextColor(0xFFE5E7EB.toInt())
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            maxWidth = bubbleMaxWidth - dp(10) // leave room for the accent bar
+            maxWidth = bubbleMaxWidth
             isClickable = true
             isFocusable = true
             setOnClickListener {
@@ -1503,46 +1503,21 @@ class MainActivity : AppCompatActivity() {
             }
             else -> { // notify
                 bg.setColor(0xFF111827.toInt())
-                bg.setStroke(dp(1), 0xFF334155.toInt())
                 lp.gravity = android.view.Gravity.CENTER
                 tv.setTextColor(0xFF93C5FD.toInt())
                 tv.textSize = 13f
             }
         }
-        tv.background = bg
-
-        // Session color accent: a thin vertical strip on the leading edge
-        // so you can tell which session each message belongs to at a glance.
-        val accent = View(this).apply {
-            background = GradientDrawable().apply {
-                cornerRadius = dp(3).toFloat()
-                setColor(sessionAccent)
-            }
-        }
-        val row = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = when (m.role) {
-                "user" -> android.view.Gravity.END
-                "hermes" -> android.view.Gravity.START
-                else -> android.view.Gravity.CENTER
-            }
-        }
-        // For centered notify rows the accent bar is omitted (they're
-        // already visually distinct); for user/hermes rows it sits on the
-        // leading edge (left for hermes, right for user).
+        // Session color border: the bubble outline matches the session it
+        // belongs to (same color as the chip), so messages are attributable
+        // at a glance. Notify rows keep their neutral look.
         if (m.role != "notify") {
-            val accentLp = LinearLayout.LayoutParams(dp(4), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-                topMargin = dp(6)
-                bottomMargin = dp(6)
-                if (m.role == "user") marginStart = dp(6) else marginEnd = dp(6)
-            }
-            row.addView(accent, accentLp)
+            bg.setStroke(dp(2), sessionAccent)
+        } else {
+            bg.setStroke(dp(1), 0xFF334155.toInt())
         }
-        row.addView(tv)
-        historyList.addView(row, LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
-        ).apply { topMargin = dp(2) })
+        tv.background = bg
+        historyList.addView(tv, lp)
     }
 
     /**
