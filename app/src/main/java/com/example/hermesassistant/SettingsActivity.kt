@@ -32,6 +32,18 @@ class SettingsActivity : AppCompatActivity() {
         val backButton = findViewById<ImageButton>(R.id.settingsBackButton)
         val checkUpdateButton = findViewById<Button>(R.id.settingsCheckUpdateButton)
         val installUpdateButton = findViewById<Button>(R.id.settingsInstallUpdateButton)
+        val btOnlySwitch = findViewById<android.widget.Switch>(R.id.settingsBtOnlySwitch)
+        val muteSwitch = findViewById<android.widget.Switch>(R.id.settingsMuteSwitch)
+
+        // Audio prefs
+        btOnlySwitch.isChecked = AppSettings.playOverBluetoothOnly(this)
+        btOnlySwitch.setOnCheckedChangeListener { _, checked ->
+            AppSettings.setPlayOverBluetoothOnly(this, checked)
+        }
+        muteSwitch.isChecked = AppSettings.muteVoice(this)
+        muteSwitch.setOnCheckedChangeListener { _, checked ->
+            AppSettings.setMuteVoice(this, checked)
+        }
 
         // Back arrow: return to the main app
         backButton.setOnClickListener { finish() }

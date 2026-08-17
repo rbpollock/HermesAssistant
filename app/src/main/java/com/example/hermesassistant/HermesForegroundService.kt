@@ -404,7 +404,10 @@ class HermesForegroundService : Service(), RecognitionListener {
 
     private fun speakFromService(text: String) {
         try {
-            if (!isBluetoothConnected()) return // same BT gating as the app
+            // Same routing as the app's AudioPlayer: mute silences all,
+            // BT-only requires a headset, otherwise use the phone speaker.
+            if (AppSettings.muteVoice(this)) return
+            if (AppSettings.playOverBluetoothOnly(this) && !isBluetoothConnected()) return
             queuedReplyText = text
             if (replyTts == null) {
                 replyTts = TextToSpeech(this) { status ->

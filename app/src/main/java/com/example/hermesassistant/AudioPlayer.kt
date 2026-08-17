@@ -18,8 +18,9 @@ import java.util.Locale
  * and notify alerts (via TextToSpeech) feed one queue and play strictly
  * one at a time, so an alert never talks over response audio.
  *
- * Also owns the Bluetooth-gated autoplay decision and the "don't re-read
- * the response as a notify alert" (echo/chorus) tracking.
+ * Routing honors AppSettings: "play over Bluetooth only" (default) keeps
+ * audio on A2DP devices; when disabled, playback uses the phone speaker.
+ * "Mute voice" silences everything while notifications still post.
  */
 class AudioPlayer(private val context: Context) {
 
@@ -190,18 +191,28 @@ class AudioPlayer(private val context: Context) {
 
     /** Queue a server MP3 for playback. */
     fun playAudio(file: File) {
-        if (!isBluetoothConnected()) {
-            listener?.onStatus("Response ready — connect Bluetooth to hear it, or tap to play")
-            return
+        if (AppSettings.muteVoice(context)) return
+        if (!AppSettings.playOverBluetoothOnly(context) || isBluetoothConnected()) {
+            enqueue(PlaybackItem(audioFile = file, spokenText = null))
+        } else {
+            // BT-only and no headset: park the file for tap-to-play.
+            pendingAudioFile = file
+            listener?.onStatus("Response ready — tap to play")
         }
-        enqueue(PlaybackItem(audioFile = file, spokenText = null))
     }
 
-    /** Queue a TTS alert. Caller decides Bluetooth gating + echo skip. */
+    /** Queue a TTS alert. Caller decides echo skip; mute + route here. */
     fun speakAlert(title: String, message: String) {
-        if (!isBluetoothConnected()) return
-        enqueue(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
+        if (AppSettings.muteVoice(context)) return
+        if (!AppSettings.playOverBluetoothOnly(context) || isBluetoothConnected()) {
+            enqueue(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
+        }
     }
+
+    // Parked response waiting for a tap when BT-only + no headset.
+    private var pendingAudioFile: File? = null
+    fun pendingAudio(): File? = pendingAudioFile
+    fun clearPendingAudio() { pendingAudioFile = null }
 
     fun playPending(file: File?) {
         file?.let { enqueue(PlaybackItem(audioFile = it, spokenText = null)) }
@@ -323,6 +334,7 @@ class AudioPlayer(private val context: Context) {
         disarmPlaybackWatchdog()
         playbackQueue.clear()
         isSpeaking = false
+        pendingAudioFile = null
         // Tear down any in-flight progressive stream.
         streamActive = false
         streamFailed = true

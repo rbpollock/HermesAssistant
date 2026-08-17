@@ -54,8 +54,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var panelCollapseBar: View
     private lateinit var panelToggleButton: ImageButton
     private lateinit var panelToggleLabel: TextView
+    private lateinit var panelStripStatus: TextView
+    private lateinit var panelStripSpeakButton: Button
 
     private var panelCollapsed = false
+    // True when the panel was collapsed BY TYPING (so closing the typing
+    // row restores the pre-typing state instead of staying collapsed).
+    private var panelCollapsedForTyping = false
     private var navBarInsetBottom = 0
 
     private lateinit var notificationManager: NotificationManagerCompat
@@ -263,6 +268,8 @@ class MainActivity : ComponentActivity() {
         panelCollapseBar = findViewById(R.id.panelCollapseBar)
         panelToggleButton = findViewById(R.id.panelToggleButton)
         panelToggleLabel = findViewById(R.id.panelToggleLabel)
+        panelStripStatus = findViewById(R.id.panelStripStatus)
+        panelStripSpeakButton = findViewById(R.id.panelStripSpeakButton)
     }
 
     // ------------------------------------------------------------------
@@ -362,8 +369,8 @@ class MainActivity : ComponentActivity() {
             override fun onStateChanged(state: VoiceInput.State) {
                 when (state) {
                     VoiceInput.State.STT,
-                    VoiceInput.State.DICTATION -> speakButton.text = "TAP TO CANCEL"
-                    VoiceInput.State.IDLE -> speakButton.text = "LISTENING FOR WAKE WORD"
+                    VoiceInput.State.DICTATION -> updateSpeakButtons("TAP TO CANCEL")
+                    VoiceInput.State.IDLE -> updateSpeakButtons("LISTENING FOR WAKE WORD")
                 }
             }
 
@@ -424,7 +431,7 @@ class MainActivity : ComponentActivity() {
     /** Back to wake-word mode (used after errors / cancelled listens). */
     private fun startWakeWord() {
         HermesForegroundService.startWakeWordNow()
-        speakButton.text = "LISTENING FOR WAKE WORD"
+        updateSpeakButtons("LISTENING FOR WAKE WORD")
         setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
     }
 
@@ -627,9 +634,9 @@ class MainActivity : ComponentActivity() {
                 renderHistory()
             }
 
-            // Speak the alert ONLY when a Bluetooth device is connected and
-            // the server didn't flag it as already-spoken response audio
-            // (echo/chorus fix), and it's not the response text we just played.
+            // Speak the alert only when routing allows (BT-only vs speaker,
+            // mute) AND the server didn't flag it as already-spoken response
+            // audio (echo/chorus fix), and it's not the text we just played.
             val serverSaysSpoken = json.optBoolean("already_spoken", false)
             if (!serverSaysSpoken && !audio.isResponseEcho(message)) {
                 audio.speakAlert(title, message)
@@ -921,6 +928,9 @@ class MainActivity : ComponentActivity() {
         // takes the whole screen; tap again to expand. Whole band tappable.
         panelCollapseBar.setOnClickListener { togglePanelCollapsed() }
         panelToggleButton.setOnClickListener { togglePanelCollapsed() }
+        // The collapsed strip keeps the half-window frontend alive in
+        // miniature: its speak button is the same action as the big one.
+        panelStripSpeakButton.setOnClickListener { onSpeakButtonPressed() }
         panelCollapseBar.post { updateNavBarInset() }
     }
 
@@ -935,6 +945,10 @@ class MainActivity : ComponentActivity() {
             if (panelCollapsed) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down
         )
         panelToggleLabel.text = if (panelCollapsed) "Expand panel" else "Collapse panel"
+        // Collapsed: swap the label for the slim strip (status + speak).
+        panelToggleLabel.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
+        panelStripStatus.visibility = if (panelCollapsed) View.VISIBLE else View.GONE
+        panelStripSpeakButton.visibility = if (panelCollapsed) View.VISIBLE else View.GONE
         // When collapsed, the chat section gets ~5% bottom padding so the
         // expand band floats above the bottom of the chat content.
         val extra = if (panelCollapsed) {
@@ -979,14 +993,7 @@ class MainActivity : ComponentActivity() {
     // ------------------------------------------------------------------
 
     private fun wireTextInput() {
-        speakButton.setOnClickListener {
-            when {
-                voice.isActive -> voice.cancel()
-                audio.playbackInFlight() -> Unit // ignore taps mid-playback
-                !isConnected -> startOfflineDictation()
-                else -> beginListening()
-            }
-        }
+        speakButton.setOnClickListener { onSpeakButtonPressed() }
 
         val iconSize = (resources.displayMetrics.widthPixels * 0.12f).toInt()
         typeToggleButton.layoutParams = typeToggleButton.layoutParams.apply { width = iconSize; height = iconSize }
@@ -994,9 +1001,24 @@ class MainActivity : ComponentActivity() {
             val visible = textInputRow.visibility == View.VISIBLE
             textInputRow.visibility = if (visible) View.GONE else View.VISIBLE
             if (visible) {
+                // Closing the typing row: hide the keyboard; restore the
+                // panel to whatever collapse state it had before typing.
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 imm.hideSoftInputFromWindow(textInput.windowToken, 0)
+                if (panelCollapsedForTyping) {
+                    panelCollapsedForTyping = false
+                    panelCollapsed = false
+                    applyPanelCollapsed()
+                }
             } else {
+                // Opening the typing row: collapse the listening panel so
+                // the keyboard never crushes it — chat + input own the
+                // full screen while typing (B3).
+                if (!panelCollapsed) {
+                    panelCollapsed = true
+                    panelCollapsedForTyping = true
+                    applyPanelCollapsed()
+                }
                 textInput.requestFocus()
                 val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
                 imm.showSoftInput(textInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
@@ -1015,6 +1037,31 @@ class MainActivity : ComponentActivity() {
         if (text.isEmpty()) return
         textInput.setText("")
         sendUserMessage(text)
+    }
+
+    /** Shared primary action for BOTH the big panel button and the
+     *  collapsed strip button: cancel, play a parked response, or listen. */
+    private fun onSpeakButtonPressed() {
+        when {
+            voice.isActive -> voice.cancel()
+            audio.playbackInFlight() -> Unit // ignore taps mid-playback
+            audio.pendingAudio() != null -> {
+                // A response is parked (BT-only + no headset) — tap plays it
+                val f = audio.pendingAudio()
+                audio.clearPendingAudio()
+                audio.playPending(f)
+            }
+            !isConnected -> startOfflineDictation()
+            else -> beginListening()
+        }
+    }
+
+    /** Keep both speak buttons (panel + collapsed strip) labeled alike. */
+    private fun updateSpeakButtons(label: String) {
+        speakButton.text = label
+        if (::panelStripSpeakButton.isInitialized) {
+            panelStripSpeakButton.text = if (label.length > 12) "CANCEL" else "SPEAK"
+        }
     }
 
     private fun wireSessionChips() {
@@ -1142,5 +1189,9 @@ class MainActivity : ComponentActivity() {
         val oneLine = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
         statusText.text = oneLine
         statusRing.state = state
+        // Keep the collapsed strip's one-line status in sync.
+        if (::panelStripStatus.isInitialized) {
+            panelStripStatus.text = oneLine
+        }
     }
 }
