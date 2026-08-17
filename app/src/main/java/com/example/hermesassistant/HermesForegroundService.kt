@@ -136,7 +136,6 @@ class HermesForegroundService : Service(), RecognitionListener {
         super.onCreate()
         setInstance(this)
         setAppContext(this)
-        ChimePlayer.init(this)
         micPermissionGranted = ContextCompat.checkSelfPermission(
             this, android.Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
@@ -275,7 +274,7 @@ class HermesForegroundService : Service(), RecognitionListener {
             // Offline transcription complete — hand the text to MainActivity
             val text = (hypothesis ?: "").trim()
             stopVoskService()
-            ChimePlayer.playStop()
+            ChimePlayer.playStop(this)
             if (text.isNotEmpty()) {
                 // Broadcast so MainActivity can show it in history.
                 val i = Intent(ACTION_DICTATION_RESULT)
@@ -358,7 +357,7 @@ class HermesForegroundService : Service(), RecognitionListener {
             stopVoskService()
             dictationMode = false
             dictationFromWakeWord = false
-            ChimePlayer.playStop()
+            ChimePlayer.playStop(this)
             startWakeWordNow()
         }
     }
@@ -367,7 +366,7 @@ class HermesForegroundService : Service(), RecognitionListener {
         if (dictationMode) {
             dictationMode = false
             dictationFromWakeWord = false
-            ChimePlayer.playStop()
+            ChimePlayer.playStop(this)
             startWakeWordNow()
         }
     }
@@ -378,7 +377,7 @@ class HermesForegroundService : Service(), RecognitionListener {
             stopVoskService()
             dictationMode = false
             dictationFromWakeWord = false
-            ChimePlayer.playStop()
+            ChimePlayer.playStop(this)
             startWakeWordNow()
         }
     }
@@ -391,7 +390,7 @@ class HermesForegroundService : Service(), RecognitionListener {
         // "Listening..." status card; the mic is owned by Vosk dictation
         // in this service, so the phrase gets transcribed here and sent
         // to the relay over HTTP (works even with MainActivity dead).
-        ChimePlayer.playStart()
+        ChimePlayer.playStart(this)
         if (Settings.canDrawOverlays(this)) {
             showOverlay()
             dictationFromWakeWord = true

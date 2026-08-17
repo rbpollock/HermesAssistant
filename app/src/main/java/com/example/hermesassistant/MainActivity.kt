@@ -125,6 +125,9 @@ class MainActivity : AppCompatActivity() {
     // scanning for the wake word, and the text goes to the offline queue.
     private var dictationMode = false
     private var dictationWatchdog: Runnable? = null
+    // True while Google STT (startListening) is actively listening, so the
+    // speak button can cancel it (tap-to-cancel, same as dictation).
+    private var sttListening = false
 
     // True while we are flushing the offline queue after reconnect
     private var flushingQueue = false
@@ -195,6 +198,9 @@ class MainActivity : AppCompatActivity() {
             if (dictationMode) {
                 // Tap again while dictating = cancel
                 exitDictationMode()
+            } else if (sttListening) {
+                // Tap while Google STT is listening = cancel
+                cancelStt()
             } else if (!isConnected) {
                 // Offline: transcribe locally with Vosk and queue the message
                 startOfflineDictation()
@@ -257,12 +263,10 @@ class MainActivity : AppCompatActivity() {
         // Make the collapsed band clear the navigation bar from the start.
         panelCollapseBar.post { updateNavBarInset() }
 
-        // Auto-start listening if invoked via the OS Assistant hardware button,
-        // the headphone/BT button (VOICE_COMMAND), or our custom action from
-        // the VoiceInteractionSession.
-        if (isVoiceInvocation(intent?.action)) {
-            if (isConnected) startListening() else startOfflineDictation()
-        }
+        // Auto-start listening whenever the activity loads. The speak
+        // button becomes "TAP TO CANCEL" while listening, so the user can
+        // always stop it. (Voice-invocation intents hit this same path.)
+        if (isConnected) startListening() else startOfflineDictation()
 
         // Auto-update: the "Update" notification action lands here.
         if (isUpdateAction(intent?.action)) {
@@ -507,8 +511,7 @@ class MainActivity : AppCompatActivity() {
     private fun startOfflineDictation() {
         dictationMode = true
         expandPanel()
-        ChimePlayer.init(this)
-        ChimePlayer.playStart()
+        ChimePlayer.playStart(this)
         speakButton.text = "TAP TO CANCEL"
         setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
         HermesForegroundService.startDictation()
@@ -1333,9 +1336,9 @@ class MainActivity : AppCompatActivity() {
         // Free the mic: stop the service's wake word before Google STT.
         stopWakeWordForStt()
         expandPanel()
-        ChimePlayer.init(this)
-        ChimePlayer.playStart()
-
+        ChimePlayer.playStart(this)
+        sttListening = true
+        speakButton.text = "TAP TO CANCEL"
         // The AudioRecord release takes a moment to propagate through the
         // audio HAL; starting STT immediately can fail with ERROR_AUDIO.
         // Small settle delay is the standard fix for this handoff.
@@ -1354,6 +1357,22 @@ class MainActivity : AppCompatActivity() {
         setStatus("Listening...", StatusRingView.State.LISTENING)
     }
 
+    /** Cancel an in-progress Google STT session (button tap = cancel). */
+    private fun cancelStt() {
+        if (!sttListening) return
+        sttListening = false
+        try {
+            speechRecognizer.cancel()
+            speechRecognizer.stopListening()
+        } catch (e: Exception) {
+            // Best-effort
+        }
+        ChimePlayer.playStop(this)
+        speakButton.text = "LISTENING FOR WAKE WORD"
+        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
+        startWakeWord()
+    }
+
     private fun setupSpeechRecognizer() {
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
         speechRecognizer.setRecognitionListener(object : RecognitionListener {
@@ -1363,10 +1382,11 @@ class MainActivity : AppCompatActivity() {
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {
                 setStatus("Thinking...", StatusRingView.State.THINKING)
-                ChimePlayer.playStop()
+                ChimePlayer.playStop(this@MainActivity)
             }
             override fun onError(error: Int) {
-                ChimePlayer.playStop()
+                sttListening = false
+                ChimePlayer.playStop(this@MainActivity)
                 // Google STT may fail when offline — fall back to Vosk dictation
                 if (!isConnected) {
                     startOfflineDictation()
@@ -1377,6 +1397,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onResults(results: Bundle?) {
+                sttListening = false
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
                     sendUserMessage(matches[0])
