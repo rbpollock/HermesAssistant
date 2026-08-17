@@ -460,30 +460,26 @@ class MainActivity : AppCompatActivity() {
     /** Handle the "Update" action: download the APK and hand to the installer. */
     private fun handleUpdateAction() {
         val apkUrl = intent.getStringExtra("update_apk_url").orEmpty()
+        val version = intent.getStringExtra("update_version").orEmpty()
         if (apkUrl.isEmpty()) {
             // No direct APK asset — just open the release page
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
             return
         }
-        if (!UpdateChecker.canRequestInstalls(this)) {
-            // Android 8+: installing from "unknown sources" needs a one-time
-            // per-source grant. Take the user to that settings screen.
-            setStatus("Allow installs from this app, then retry", StatusRingView.State.IDLE)
-            try {
-                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
-            } catch (e: Exception) {
-                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
-            }
-            return
-        }
+        val release = UpdateChecker.ReleaseInfo(
+            versionName = version.ifEmpty { "latest" },
+            apkUrl = apkUrl,
+            releaseUrl = UpdateChecker.RELEASE_PAGE_URL,
+            tagName = version.ifEmpty { "latest" },
+        )
         setStatus("Downloading update...", StatusRingView.State.LISTENING)
         Thread {
-            val error = UpdateChecker.downloadAndInstall(this, apkUrl)
+            val message = UpdateChecker.installRelease(this, release)
             runOnUiThread {
-                if (error != null) {
-                    setStatus("Update failed: $error", StatusRingView.State.IDLE)
+                if (message.startsWith("Update failed")) {
+                    setStatus(message, StatusRingView.State.IDLE)
                 } else {
-                    setStatus("Installing update...", StatusRingView.State.LISTENING)
+                    setStatus(message, StatusRingView.State.LISTENING)
                 }
             }
         }.start()

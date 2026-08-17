@@ -165,6 +165,20 @@
                 android:textSize="13sp"
                 android:textStyle="bold" />
 
+            <!-- Appears when an update is found: download + install it.
+                 Hidden until the check reports a newer release. -->
+            <Button
+                android:id="@+id/settingsInstallUpdateButton"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:layout_marginTop="8dp"
+                android:backgroundTint="#1E293B"
+                android:text="INSTALL UPDATE"
+                android:textColor="#34D399"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+
         </LinearLayout>
     </ScrollView>
 </LinearLayout>

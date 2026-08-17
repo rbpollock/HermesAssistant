@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
@@ -32,6 +31,7 @@ class SettingsActivity : AppCompatActivity() {
         val githubLink = findViewById<TextView>(R.id.settingsGithubLink)
         val backButton = findViewById<ImageButton>(R.id.settingsBackButton)
         val checkUpdateButton = findViewById<Button>(R.id.settingsCheckUpdateButton)
+        val installUpdateButton = findViewById<Button>(R.id.settingsInstallUpdateButton)
 
         // Back arrow: return to the main app
         backButton.setOnClickListener { finish() }
@@ -67,13 +67,39 @@ class SettingsActivity : AppCompatActivity() {
             imm.hideSoftInputFromWindow(hostInput.windowToken, 0)
         }
 
-        // Manual update check
+        // Manual update check. When a newer release exists, the INSTALL
+        // UPDATE button appears so the user can download + install it.
         checkUpdateButton.setOnClickListener {
             statusText.text = "Checking for updates..."
+            installUpdateButton.visibility = android.view.View.GONE
             Thread {
-                val message = UpdateChecker.checkNow(this)
+                val release = UpdateChecker.fetchLatestRelease()
                 runOnUiThread {
-                    statusText.text = message ?: "Update check failed"
+                    if (release == null) {
+                        statusText.text = "Couldn't reach GitHub. Check your connection."
+                    } else if (UpdateChecker.compareVersions(release.versionName, currentVersion()) > 0) {
+                        statusText.text = "v${release.versionName} available (you're on ${currentVersion()})"
+                        installUpdateButton.tag = release
+                        installUpdateButton.visibility = android.view.View.VISIBLE
+                    } else {
+                        statusText.text = "You're up to date (v${currentVersion()})"
+                    }
+                }
+            }.start()
+        }
+
+        // Download + install the found release.
+        installUpdateButton.setOnClickListener {
+            val release = installUpdateButton.tag as? UpdateChecker.ReleaseInfo
+            if (release == null) {
+                statusText.text = "Run CHECK FOR UPDATES first"
+                return@setOnClickListener
+            }
+            statusText.text = "Downloading v${release.versionName}..."
+            Thread {
+                val message = UpdateChecker.installRelease(this, release)
+                runOnUiThread {
+                    statusText.text = message
                 }
             }.start()
         }

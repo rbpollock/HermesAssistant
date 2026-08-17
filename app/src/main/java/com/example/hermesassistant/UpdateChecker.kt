@@ -2,6 +2,7 @@ package com.example.hermesassistant
 
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
@@ -146,6 +147,44 @@ object UpdateChecker {
         } catch (e: Exception) {
             false
         }
+    }
+
+    /**
+     * Download the APK for the given release and hand it to the system
+     * installer. Returns a human-readable status: "installing..." on
+     * success (the system dialog takes over), or an error message.
+     */
+    fun installRelease(context: android.content.Context, release: ReleaseInfo): String {
+        val apkUrl = release.apkUrl
+        if (apkUrl.isNullOrEmpty()) {
+            // No APK asset — open the release page
+            try {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            } catch (e: Exception) {
+                return "No browser available"
+            }
+            return "Opened release page"
+        }
+        if (!canRequestInstalls(context)) {
+            // Android 8+: installing from "unknown sources" needs a one-time
+            // per-source grant. Take the user to that settings screen.
+            try {
+                context.startActivity(
+                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                )
+            } catch (e: Exception) {
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(release.releaseUrl)).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                })
+            }
+            return "Allow installs from this app, then tap INSTALL UPDATE"
+        }
+        val error = downloadAndInstall(context, apkUrl)
+        return if (error != null) "Update failed: $error" else "Installing v${release.versionName}..."
     }
 
     // ------------------------------------------------------------------

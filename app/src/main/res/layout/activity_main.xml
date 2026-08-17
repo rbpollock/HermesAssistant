@@ -6,12 +6,13 @@
     android:orientation="vertical">
 
     <!-- Top: session chips + scrollable chat history (expands when the
-         listening panel below is collapsed). -->
+         listening panel below is collapsed). Slightly less than the panel
+         (0.9 vs 1.1) so the collapse/expand band sits ~5% higher. -->
     <LinearLayout
         android:id="@+id/chatSection"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_weight="0.9"
         android:orientation="vertical">
 
         <TextView
@@ -158,12 +159,14 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- Bottom: assistant listening panel. Collapsible via the bar above. -->
+    <!-- Bottom: assistant listening panel. Collapsible via the bar above.
+         Slightly larger than the chat section (1.1 vs 0.9) so the
+         collapse/expand band sits ~5% higher on screen. -->
     <FrameLayout
         android:id="@+id/assistantPanel"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_weight="1.1"
         android:background="@drawable/panel_background">
 
         <LinearLayout
