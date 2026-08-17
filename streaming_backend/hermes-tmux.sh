@@ -118,6 +118,15 @@ if [ -n "$DETECTED" ]; then
     mux_rename "$TMP_NAME" "hermes_${DETECTED}"
     echo "hermes session $DETECTED running in $MUX: hermes_${DETECTED}"
 else
-    echo "warning: could not detect session id; $MUX session: $TMP_NAME"
-    echo "To target it, start with: hermes-tmux --resume <session_id>"
+    # No explicit id and no registry detection: this session would be
+    # UNINJECTABLE (the relay matches hermes_<session_id>). Kill it and
+    # fail loudly instead of leaving a silently-unreachable session.
+    if [ "$MUX" = "screen" ]; then
+        screen -S "$TMP_NAME" -X quit 2>/dev/null
+    else
+        "$MUX" kill-session -t "$TMP_NAME" 2>/dev/null
+    fi
+    echo "error: could not determine the session id. Start with an explicit id:" >&2
+    echo "  hermes-tmux --resume <session_id>" >&2
+    exit 1
 fi
