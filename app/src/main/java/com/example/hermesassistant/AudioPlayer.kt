@@ -58,6 +58,95 @@ class AudioPlayer(private val context: Context) {
     }
 
     // ------------------------------------------------------------------
+    // Progressive streaming (A2)
+    //
+    // The server generates MP3 chunks and streams them over the WS. Instead
+    // of buffering the WHOLE response and playing at audio_end (long silent
+    // wait), we hand MediaPlayer a pipe: chunks are written to the write end
+    // as they arrive, MediaPlayer reads + plays them immediately from the
+    // read end. On audio_end the write end closes and playback finishes
+    // naturally at EOF.
+    //
+    // The caller ALSO buffers bytes to a temp file; if the pipe fails for
+    // any reason, it falls back to playing that file at audio_end.
+    // ------------------------------------------------------------------
+
+    private var streamMp: MediaPlayer? = null
+    private var streamWriter: android.os.ParcelFileDescriptor.AutoCloseOutputStream? = null
+    private val streamExecutor = java.util.concurrent.Executors.newSingleThreadExecutor()
+    @Volatile private var streamFailed = false
+    @Volatile private var streamActive = false
+
+    /** Begin a progressive audio stream. Call once before the first chunk. */
+    fun streamStart() {
+        if (streamActive) return
+        streamFailed = false
+        try {
+            val pipes = android.os.ParcelFileDescriptor.createPipe()
+            val readPfd = pipes[0]
+            val writePfd = pipes[1]
+            streamWriter = android.os.ParcelFileDescriptor.AutoCloseOutputStream(writePfd)
+            streamMp?.release()
+            streamMp = MediaPlayer().apply {
+                setDataSource(readPfd.fileDescriptor)
+                setOnErrorListener { _, _, _ -> streamFailed = true; true }
+                setOnCompletionListener { onStreamComplete() }
+                prepareAsync()
+            }
+            readPfd.close() // MediaPlayer dup'd the fd during setDataSource
+            streamActive = true
+            isSpeaking = true
+            playbackItemInFlight = true
+            main { listener?.onSpeakingStarted() }
+        } catch (e: Exception) {
+            streamFailed = true
+            streamActive = false
+        }
+    }
+
+    /** Write a chunk of MP3 bytes into the stream (background thread). */
+    fun streamWrite(bytes: ByteArray) {
+        if (!streamActive || streamFailed) return
+        streamExecutor.execute {
+            try {
+                streamWriter?.write(bytes)
+            } catch (e: Exception) {
+                streamFailed = true
+            }
+        }
+    }
+
+    /** Signal end of audio. Writer closes; MediaPlayer hits EOF -> done. */
+    fun streamEnd() {
+        if (!streamActive) return
+        streamActive = false
+        streamExecutor.execute {
+            try {
+                streamWriter?.close()
+            } catch (e: Exception) {}
+            streamWriter = null
+        }
+    }
+
+    /** True when the pipe path failed and the caller should fall back. */
+    fun streamFailed(): Boolean = streamFailed
+
+    private fun onStreamComplete() {
+        try { streamMp?.release() } catch (e: Exception) {}
+        streamMp = null
+        streamWriter = null
+        main { finishStreamedItem() }
+    }
+
+    private fun finishStreamedItem() {
+        if (playbackItemInFlight) {
+            playbackItemInFlight = false
+            listener?.onSpeakingStopped()
+        }
+        startNextPlayback() // drains any queued TTS alerts, else onQueueEmpty
+    }
+
+    // ------------------------------------------------------------------
     // TTS
     // ------------------------------------------------------------------
 
@@ -234,6 +323,18 @@ class AudioPlayer(private val context: Context) {
         disarmPlaybackWatchdog()
         playbackQueue.clear()
         isSpeaking = false
+        // Tear down any in-flight progressive stream.
+        streamActive = false
+        streamFailed = true
+        try {
+            streamWriter?.close()
+        } catch (e: Exception) {}
+        streamWriter = null
+        try {
+            streamMp?.release()
+        } catch (e: Exception) {}
+        streamMp = null
+        streamExecutor.shutdownNow()
         try {
             mediaPlayer?.release()
         } catch (e: Exception) {}

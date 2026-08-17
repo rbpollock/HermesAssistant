@@ -215,6 +215,16 @@ async def chat_message(msg: ChatMessageIn):
     reply, injected_live = _chat_reply(message, effective_session)
     print(f"💬 HTTP chat -> session {effective_session}: {reply[:200]}")
 
+    # The phone will hear/speak the reply from the HTTP response itself.
+    # If a "Hermes finished" hook event arrives for the same session right
+    # after (one-shot runs fire hooks too), flag it as already_spoken so
+    # the app doesn't read the reply out a second time (echo/chorus fix,
+    # same window as the WS path). Injected-live replies are only the
+    # "Delivered" confirmation — the real answer comes from the live
+    # session's own hook later, which must NOT be suppressed.
+    if not injected_live:
+        last_ws_reply[effective_session] = time.time()
+
     # TEMPORARY: when a message is injected into a live session, push a
     # notify to the phone so the user gets confirmation without watching
     # the screen (the TUI redraws and the injected line can be easy to

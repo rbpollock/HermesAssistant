@@ -86,6 +86,10 @@ class MainActivity : ComponentActivity() {
     // Offline queue flushing
     private var flushingQueue = false
     private var autoListenScheduled = false
+    // A4: whether the last turn was initiated by the user (voice/typed
+    // message) vs. a background notify. Auto-listen only after a
+    // user-initiated turn; after a notify the app stays quiet (wake word).
+    private var lastTurnUserInitiated = false
 
     private val serviceReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -99,6 +103,19 @@ class MainActivity : ComponentActivity() {
                 NotificationReplyReceiver.ACTION_HISTORY_UPDATED -> {
                     // An inline reply from the shade appended to the shared
                     // chat_history.json — reload so it shows up here.
+                    chatHistory.reload()
+                    renderHistory()
+                }
+                HermesForegroundService.ACTION_REPLY_READY -> {
+                    // A wake-word HTTP reply landed. The service appended it
+                    // to the shared history file AND spoke it (BT-gated) —
+                    // we refresh the view and status without re-appending
+                    // (reload would duplicate) and without re-speaking.
+                    val replyText = intent.getStringExtra(HermesForegroundService.EXTRA_REPLY_TEXT).orEmpty()
+                    if (replyText.isNotEmpty()) {
+                        audio.rememberSpokenResponse(replyText)
+                        setStatus("Hermes: $replyText", StatusRingView.State.CONNECTED)
+                    }
                     chatHistory.reload()
                     renderHistory()
                 }
@@ -185,6 +202,7 @@ class MainActivity : ComponentActivity() {
         val filter = android.content.IntentFilter().apply {
             addAction(HermesForegroundService.ACTION_WAKE_WORD)
             addAction(HermesForegroundService.ACTION_DICTATION_RESULT)
+            addAction(HermesForegroundService.ACTION_REPLY_READY)
             addAction(NotificationReplyReceiver.ACTION_HISTORY_UPDATED)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -268,12 +286,10 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onTextResponse(message: String) {
-                setStatus("Hermes: $message", StatusRingView.State.CONNECTED)
-                audio.rememberSpokenResponse(message)
-                chatHistory.append(
-                    ChatMessage("hermes", message, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
-                )
-                renderHistory()
+                // A5: single unified reply path (history + status + echo
+                // tracking). Audio for WS replies arrives separately as
+                // streamed chunks (A2).
+                handleAssistantReply(message)
             }
 
             override fun onStatus(message: String) {
@@ -285,21 +301,35 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onAudioBytes(bytes: ByteString) {
+                // Progressive playback (A2): the first chunk starts the
+                // stream so audio begins as soon as data flows, not at
+                // audio_end. Bytes are ALSO buffered to a temp file so a
+                // pipe failure can fall back to whole-file playback.
                 if (audioOutputStream == null) {
                     audioTempFile = File(cacheDir, "stream_${System.currentTimeMillis()}.mp3")
                     audioOutputStream = FileOutputStream(audioTempFile)
+                    audio.streamStart()
                 }
                 try {
                     audioOutputStream?.write(bytes.toByteArray())
                 } catch (e: IOException) {
                     // ignore
                 }
+                audio.streamWrite(bytes.toByteArray())
             }
 
             override fun onAudioEnd() {
                 audioOutputStream?.close()
                 audioOutputStream = null
-                audioTempFile?.let { audio.playAudio(it) }
+                audio.streamEnd()
+                val streamOk = !audio.streamFailed()
+                if (streamOk) {
+                    // Pipe path handled playback — nothing more to do.
+                    setStatus("Speaking...", StatusRingView.State.SPEAKING)
+                } else {
+                    // Pipe failed: fall back to the buffered file.
+                    audioTempFile?.let { audio.playAudio(it) }
+                }
                 if (flushingQueue) sendNextQueued()
             }
         })
@@ -441,10 +471,28 @@ class MainActivity : ComponentActivity() {
     // Sending
     // ------------------------------------------------------------------
 
+    /**
+     * A5: the single place a Hermes reply enters the UI — history bubble,
+     * status line, and echo tracking. Both the WS text frame and (via the
+     * service's ACTION_REPLY_READY handler) the wake-word HTTP reply feed
+     * this path, so every reply is treated identically.
+     */
+    private fun handleAssistantReply(message: String) {
+        setStatus("Hermes: $message", StatusRingView.State.CONNECTED)
+        audio.rememberSpokenResponse(message)
+        chatHistory.append(
+            ChatMessage("hermes", message, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
+        )
+        renderHistory()
+    }
+
     /** Shared send path for both voice and typed text. */
     private fun sendUserMessage(rawText: String) {
         val userText = rawText.trim()
         if (userText.isEmpty()) return
+
+        // A4: this was a user-initiated turn — auto-listen may follow.
+        lastTurnUserInitiated = true
 
         activeSessionId = replySessionId
         activeSessionTitle = replySessionTitle
@@ -555,6 +603,19 @@ class MainActivity : ComponentActivity() {
             )
         )
         renderHistory()
+
+        // A4: an incoming notify is NOT a user-initiated turn — keep the
+        // app quiet afterwards (no auto-listen chime spam). The WS text
+        // reply to OUR message already arrived via onTextResponse and
+        // marked the turn as user-initiated; don't let the trailing
+        // "Hermes finished" notify flip it back to quiet before the
+        // auto-listen fires.
+        val isReplyToOwnTurn = json.optBoolean("already_spoken", false) ||
+            audio.isResponseEcho(message) ||
+            json.optString("event") == "injected"
+        if (!isReplyToOwnTurn) {
+            lastTurnUserInitiated = false
+        }
 
         val urgent = kind == "question" || kind == "approval"
         if (!isDuplicate) {
@@ -1052,14 +1113,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun scheduleAutoListen() {
+        // A4: only auto-listen after a turn the USER initiated. After a
+        // background notify (someone else's session finished), stay quiet
+        // and just leave the wake word armed — no surprise chime cycles.
+        if (!lastTurnUserInitiated) {
+            startWakeWord()
+            return
+        }
         if (autoListenScheduled) return
         autoListenScheduled = true
+        // Longer quiet delay (A4): let the user absorb the reply before
+        // the mic re-opens; 700ms was too aggressive and caused chime spam.
         statusText.postDelayed({
             autoListenScheduled = false
             if (voice.isActive || audio.playbackInFlight()) return@postDelayed
             // Offline: return to wake-word mode rather than auto-dictating
             if (isConnected) beginListening() else startWakeWord()
-        }, 700)
+        }, 2500)
     }
 
     // ------------------------------------------------------------------

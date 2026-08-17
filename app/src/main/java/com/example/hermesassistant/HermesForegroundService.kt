@@ -4,12 +4,18 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothProfile
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.speech.tts.TextToSpeech
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import org.vosk.Model
@@ -18,6 +24,7 @@ import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import okhttp3.OkHttpClient
+import java.util.Locale
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -60,6 +67,10 @@ class HermesForegroundService : Service(), RecognitionListener {
         // Set when the wake word path already POSTed the phrase to the
         // relay; MainActivity skips re-enqueueing it (double-send guard).
         const val EXTRA_DICTATION_ALREADY_SENT = "dictation_already_sent"
+        // A wake-word HTTP reply landed (history + audio). MainActivity
+        // refreshes its history view when it receives this.
+        const val ACTION_REPLY_READY = "com.example.hermesassistant.REPLY_READY"
+        const val EXTRA_REPLY_TEXT = "reply_text"
 
         // Long silence tolerance for dictation (ms). Vosk's recognizer
         // ends an utterance after its internal end-of-speech silence;
@@ -329,12 +340,51 @@ class HermesForegroundService : Service(), RecognitionListener {
                 try {
                     client.newCall(request).execute().use { resp ->
                         val bodyText = resp.body?.string().orEmpty()
-                        val injected = try {
-                            JSONObject(bodyText).optBoolean("injected_live", false)
+                        val reply = try {
+                            val o = JSONObject(bodyText)
+                            Pair(
+                                o.optString("reply", "").trim(),
+                                o.optBoolean("injected_live", false),
+                            )
                         } catch (e: Exception) {
-                            false
+                            Pair("", false)
                         }
-                        updateNotification(if (injected) "Delivered to live session" else "Message sent")
+                        val (replyText, injected) = reply
+
+                        if (injected) {
+                            // Message went into a live session. The real
+                            // answer arrives via that session's own hook
+                            // notify — don't speak the "Delivered"
+                            // confirmation as if it were a reply.
+                            updateNotification("Delivered to live session")
+                        } else if (replyText.isNotEmpty()) {
+                            // One-shot reply: speak it back (hands-free) and
+                            // persist it so MainActivity can show it.
+                            updateNotification("Hermes: ${replyText.take(120)}")
+                            // Record the reply in the shared history file
+                            // (works even when MainActivity is paused/dead).
+                            try {
+                                ChatHistoryStore(applicationContext)
+                                    .append(ChatMessage("hermes", replyText))
+                            } catch (e: Exception) {
+                                // history is best-effort
+                            }
+                            // If MainActivity is alive, tell it to refresh
+                            // history + queue the reply for its audio player
+                            // (which dedupes against its own WS replies).
+                            sendBroadcast(
+                                Intent(ACTION_REPLY_READY)
+                                    .setPackage(packageName)
+                                    .putExtra(EXTRA_REPLY_TEXT, replyText)
+                            )
+                            // Fallback for the truly-background case: speak
+                            // here so the wake word is never one-way. The
+                            // flag lets MainActivity skip its own TTS if it
+                            // also received the broadcast (no double-speak).
+                            speakFromService(replyText)
+                        } else {
+                            updateNotification("Message sent")
+                        }
                     }
                 } catch (e: Exception) {
                     updateNotification("Couldn't send — check server")
@@ -342,6 +392,63 @@ class HermesForegroundService : Service(), RecognitionListener {
             }.start()
         } catch (e: Exception) {
             updateNotification("Couldn't send — check server")
+        }
+    }
+
+    // The reply is spoken by the SERVICE (MainActivity may be paused/dead
+    // behind the overlay). MainActivity's ACTION_REPLY_READY handler only
+    // refreshes history — it never re-speaks — so there's exactly one
+    // voice for wake-word replies.
+    private var replyTts: TextToSpeech? = null
+    private var queuedReplyText: String? = null
+
+    private fun speakFromService(text: String) {
+        try {
+            if (!isBluetoothConnected()) return // same BT gating as the app
+            queuedReplyText = text
+            if (replyTts == null) {
+                replyTts = TextToSpeech(this) { status ->
+                    if (status == TextToSpeech.SUCCESS) {
+                        replyTts?.language = Locale.US
+                        speakQueuedReply()
+                    }
+                }
+            } else {
+                speakQueuedReply()
+            }
+        } catch (e: Exception) {
+            // best-effort
+        }
+    }
+
+    private fun speakQueuedReply() {
+        val text = queuedReplyText ?: return
+        queuedReplyText = null
+        try {
+            replyTts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "wake_reply")
+        } catch (e: Exception) {
+            // best-effort
+        }
+    }
+
+    /** A2DP output device connected (same check the app's AudioPlayer uses). */
+    private fun isBluetoothConnected(): Boolean {
+        try {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            for (device in audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            // fall through to adapter check
+        }
+        return try {
+            val adapter = BluetoothAdapter.getDefaultAdapter()
+            adapter != null && adapter.isEnabled &&
+                adapter.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothProfile.STATE_CONNECTED
+        } catch (e: SecurityException) {
+            false
         }
     }
 
@@ -551,6 +658,8 @@ class HermesForegroundService : Service(), RecognitionListener {
     override fun onDestroy() {
         stopVoskService()
         hideOverlay()
+        try { replyTts?.stop(); replyTts?.shutdown() } catch (e: Exception) {}
+        replyTts = null
         setInstance(null)
         super.onDestroy()
     }

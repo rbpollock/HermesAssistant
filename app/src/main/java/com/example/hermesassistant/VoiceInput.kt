@@ -33,6 +33,10 @@ class VoiceInput(private val context: Context) {
     private var speechRecognizer: SpeechRecognizer? = null
     private var state = State.IDLE
     private var listener: Listener? = null
+    // A3: the stop chime must fire ONCE per listening session. Multiple
+    // callbacks (onEndOfSpeech, then onResults) both signal "done"; the
+    // flag collapses them into a single onStoppedListening notification.
+    private var stoppedNotified = false
 
     fun attach(listener: Listener) {
         this.listener = listener
@@ -49,6 +53,7 @@ class VoiceInput(private val context: Context) {
         if (state != State.IDLE) return
         ensureRecognizer()
         state = State.STT
+        stoppedNotified = false
         listener?.onListening()
         listener?.onStateChanged(state)
 
@@ -78,7 +83,7 @@ class VoiceInput(private val context: Context) {
     private fun finishWithError(message: String) {
         if (state != State.STT) return
         state = State.IDLE
-        listener?.onStoppedListening()
+        notifyStopped()
         listener?.onStateChanged(state)
         listener?.onError(message)
     }
@@ -87,6 +92,7 @@ class VoiceInput(private val context: Context) {
     fun startOfflineDictation() {
         if (state != State.IDLE) return
         state = State.DICTATION
+        stoppedNotified = false
         listener?.onListening()
         listener?.onStateChanged(state)
         HermesForegroundService.startDictation()
@@ -103,16 +109,23 @@ class VoiceInput(private val context: Context) {
                 } catch (e: Exception) {
                     // best-effort
                 }
-                listener?.onStoppedListening()
+                notifyStopped()
                 listener?.onStateChanged(state)
             }
             State.DICTATION -> {
                 state = State.IDLE
-                listener?.onStoppedListening()
+                notifyStopped()
                 listener?.onStateChanged(state)
             }
             State.IDLE -> {}
         }
+    }
+
+    /** Fire onStoppedListening exactly once per listening session. */
+    private fun notifyStopped() {
+        if (stoppedNotified) return
+        stoppedNotified = true
+        listener?.onStoppedListening()
     }
 
     // ------------------------------------------------------------------
@@ -130,13 +143,13 @@ class VoiceInput(private val context: Context) {
 
             override fun onEndOfSpeech() {
                 listener?.onThinking()
-                listener?.onStoppedListening()
+                notifyStopped()
             }
 
             override fun onError(error: Int) {
                 if (state != State.STT) return
                 state = State.IDLE
-                listener?.onStoppedListening()
+                notifyStopped()
                 listener?.onStateChanged(state)
                 listener?.onError(sttErrorText(error))
             }
@@ -144,7 +157,7 @@ class VoiceInput(private val context: Context) {
             override fun onResults(results: Bundle?) {
                 if (state != State.STT) return
                 state = State.IDLE
-                listener?.onStoppedListening()
+                notifyStopped()
                 listener?.onStateChanged(state)
                 val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 if (!matches.isNullOrEmpty()) {
@@ -180,7 +193,7 @@ class VoiceInput(private val context: Context) {
     /** MainActivity forwards the service's dictation result here. */
     fun onDictationResult(text: String) {
         state = State.IDLE
-        listener?.onStoppedListening()
+        notifyStopped()
         listener?.onStateChanged(state)
         if (text.isNotEmpty()) listener?.onTextCaptured(text)
     }
