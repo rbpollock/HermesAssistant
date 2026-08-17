@@ -62,6 +62,101 @@ def _run_hermes(message: str, session: str) -> str:
         return "Hermes took too long to respond."
 
 
+# ----------------------------------------------------------------------
+# Live-session injection via tmux
+#
+# A persistent interactive session started with hermes-tmux.sh runs
+# under a tmux session named hermes_<session_id>. When a reply targets
+# that session and it is LIVE (in the liveness registry), we can type
+# the message straight into the running TUI with `tmux send-keys` —
+# the one real live-injection channel available. If the session is not
+# live / not under tmux, we fall back to the one-shot `hermes -z`.
+# ----------------------------------------------------------------------
+
+def _tmux_bin() -> str:
+    """Locate the locally-installed tmux (no root required)."""
+    candidates = [
+        os.path.expanduser("~/bin/tmux-local/usr/bin/tmux"),
+        "/usr/bin/tmux",
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return "tmux"
+
+
+def _live_session_id(session_id: str) -> bool:
+    """True if the session id is currently listed as live on this host.
+
+    The liveness registry (~/.hermes/runtime/active_sessions.json) only
+    covers gateway/web-server surfaces; plain `hermes chat` TUIs started
+    with hermes-tmux.sh don't register there. For those, the tmux
+    session name (hermes_<session_id>) is the marker, so check it too.
+    """
+    try:
+        state = os.path.expanduser("~/.hermes/runtime/active_sessions.json")
+        with open(state) as fh:
+            data = json.load(fh)
+        for e in data.get("entries") or []:
+            if e.get("session_id") == session_id:
+                return True
+    except Exception:
+        pass
+    # TUI sessions: a tmux session named hermes_<session_id> means live.
+    tmux = _tmux_bin()
+    try:
+        has = subprocess.run(
+            [tmux, "has-session", "-t", f"hermes_{session_id}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return has.returncode == 0
+    except Exception:
+        return False
+
+
+def _inject_via_tmux(session_id: str, message: str) -> str | None:
+    """Type a message into the live tmux session for the given session id.
+
+    Returns a short confirmation on success, or None when the session
+    isn't running under a tmux session we can reach.
+    """
+    tmux = _tmux_bin()
+    session_name = f"hermes_{session_id}"
+    try:
+        # Confirm the tmux session exists
+        has = subprocess.run(
+            [tmux, "has-session", "-t", session_name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if has.returncode != 0:
+            return None
+
+        # Type the message + Enter. send-keys takes the text as a single
+        # arg, so no shell quoting worries; 'Enter' is a tmux key name.
+        subprocess.run(
+            [tmux, "send-keys", "-t", session_name, message, "Enter"],
+            capture_output=True, text=True, timeout=10,
+        )
+        print(f"⌨️ Injected into live tmux session {session_name}: {message[:120]}")
+        return "Delivered to live session"
+    except Exception as e:
+        print(f"tmux inject failed: {e}")
+        return None
+
+
+def _chat_reply(message: str, session_id: str) -> tuple[str, bool]:
+    """Route a message to a session: live-inject if possible, else one-shot.
+
+    Returns (reply_text, injected_live).
+    """
+    if session_id and _live_session_id(session_id):
+        injected = _inject_via_tmux(session_id, message)
+        if injected is not None:
+            return injected, True
+        # Live but not tmux-reachable — fall through to one-shot.
+    return _run_hermes(message, session_id or f"android_{datetime.datetime.now().strftime('%Y_%m_%d')}"), False
+
+
 async def send_to_phone(payload: dict) -> int:
     """Send a JSON payload to every connected phone, dropping stale sockets.
 
@@ -107,9 +202,14 @@ async def chat_message(msg: ChatMessageIn):
     session_name = f"android_{today}"
     effective_session = msg.session_id or session_name
 
-    reply = await asyncio.to_thread(_run_hermes, message, effective_session)
+    reply, injected_live = _chat_reply(message, effective_session)
     print(f"💬 HTTP chat -> session {effective_session}: {reply[:200]}")
-    return {"ok": True, "session_id": effective_session, "reply": reply}
+    return {
+        "ok": True,
+        "session_id": effective_session,
+        "reply": reply,
+        "injected_live": injected_live,
+    }
 
 
 @app.post("/hermes-events")
@@ -223,8 +323,18 @@ async def websocket_endpoint(websocket: WebSocket):
             effective_session = target_session or session_name
             print(f"🎯 Session: {effective_session}")
 
-            reply_text = await asyncio.to_thread(_run_hermes, message, effective_session)
-            print(f"💬 Hermes says: {reply_text}")
+            # Live sessions under tmux get the message typed straight into
+            # the TUI (real live injection); everything else runs one-shot.
+            reply_text, injected_live = await asyncio.to_thread(_chat_reply, message, effective_session)
+            print(f"💬 Hermes says: {reply_text[:200]}")
+
+            if injected_live:
+                # The message went into the running session; the session's
+                # own response will arrive via the notify hook when it
+                # completes. Don't run a second one-shot reply.
+                await send_to_phone({"type": "status", "message": "Sent to live session"})
+                await send_to_phone({"type": "text", "message": reply_text})
+                continue
 
             # Send the text to the phone. Broadcast to ALL connected phones
             # (dropping stale sockets) so a reply isn't lost if the app
