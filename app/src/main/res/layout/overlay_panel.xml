@@ -78,6 +78,7 @@
             android:text="TAP TO SPEAK TO HERMES"
             android:textColor="#E5E7EB"
             android:textSize="13sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:visibility="gone" />
     </LinearLayout>
 </LinearLayout>

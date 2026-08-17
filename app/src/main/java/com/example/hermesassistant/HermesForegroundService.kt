@@ -366,9 +366,16 @@ class HermesForegroundService : Service(), RecognitionListener {
                 expandFromOverlay()
             }
 
-            // Bottom third of the screen
+            // Compact card: the TAP TO SPEAK button is hidden (its height +
+            // margin ≈ 56dp is no longer part of the window), and the whole
+            // window is lifted ~5% of the screen height so the expand bar
+            // (top edge) sits higher on screen than the old bottom-third
+            // position.
             val dm = resources.displayMetrics
-            val height = (dm.heightPixels / 3).coerceAtLeast(dp(220))
+            val baseHeight = (dm.heightPixels / 3).coerceAtLeast(dp(220))
+            val hiddenButtonHeight = dp(44) + dp(12) // button + its margin
+            val height = (baseHeight - hiddenButtonHeight).coerceAtLeast(dp(160))
+            val liftUp = (dm.heightPixels * 0.05f).toInt()
             val params = android.view.WindowManager.LayoutParams(
                 android.view.WindowManager.LayoutParams.MATCH_PARENT,
                 height,
@@ -378,6 +385,9 @@ class HermesForegroundService : Service(), RecognitionListener {
                 android.graphics.PixelFormat.TRANSLUCENT
             ).apply {
                 gravity = android.view.Gravity.BOTTOM
+                // y is the offset from the bottom edge; positive lifts the
+                // window up so the expand bar clears the gesture zone.
+                y = liftUp
             }
             wm.addView(view, params)
             updateOverlayStatus("Wake word heard", "Tap to open and speak")
