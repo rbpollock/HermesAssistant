@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var sessionChipsRow: LinearLayout
     private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
     private lateinit var settingsButton: android.widget.ImageButton
+    private lateinit var chatSection: android.view.View
     private lateinit var assistantPanel: android.view.View
     private lateinit var panelCollapseBar: android.view.View
     private lateinit var panelToggleButton: android.widget.ImageButton
@@ -162,6 +163,7 @@ class MainActivity : AppCompatActivity() {
         sessionChipsRow = findViewById(R.id.sessionChipsRow)
         sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
         settingsButton = findViewById(R.id.settingsButton)
+        chatSection = findViewById(R.id.chatSection)
         assistantPanel = findViewById(R.id.assistantPanel)
         panelCollapseBar = findViewById(R.id.panelCollapseBar)
         panelToggleButton = findViewById(R.id.panelToggleButton)
@@ -956,6 +958,18 @@ class MainActivity : AppCompatActivity() {
             panelCollapseBar.paddingTop,
             panelCollapseBar.paddingRight,
             if (panelCollapsed) navBarInsetBottom else 0
+        )
+
+        // When collapsed, hold the EXPAND band ~5% above the bottom of the
+        // chat: pad the chat section's bottom so the band floats higher
+        // than flush against the chat content. When expanded the assistant
+        // panel occupies that space, so padding returns to 0.
+        val lift = if (panelCollapsed) (resources.displayMetrics.heightPixels * 0.05f).toInt() else 0
+        chatSection.setPadding(
+            chatSection.paddingLeft,
+            chatSection.paddingTop,
+            chatSection.paddingRight,
+            lift
         )
     }
 
