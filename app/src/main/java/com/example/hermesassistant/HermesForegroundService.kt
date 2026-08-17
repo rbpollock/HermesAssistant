@@ -57,6 +57,9 @@ class HermesForegroundService : Service(), RecognitionListener {
         const val ACTION_WAKE_WORD = "com.example.hermesassistant.WAKE_WORD"
         const val ACTION_DICTATION_RESULT = "com.example.hermesassistant.DICTATION_RESULT"
         const val EXTRA_DICTATION_TEXT = "dictation_text"
+        // Set when the wake word path already POSTed the phrase to the
+        // relay; MainActivity skips re-enqueueing it (double-send guard).
+        const val EXTRA_DICTATION_ALREADY_SENT = "dictation_already_sent"
 
         // Long silence tolerance for dictation (ms). Vosk's recognizer
         // ends an utterance after its internal end-of-speech silence;
@@ -280,6 +283,11 @@ class HermesForegroundService : Service(), RecognitionListener {
                 val i = Intent(ACTION_DICTATION_RESULT)
                     .setPackage(packageName)
                     .putExtra(EXTRA_DICTATION_TEXT, text)
+                    // When the wake word triggered this, the service already
+                    // POSTed the phrase to the relay — MainActivity must not
+                    // ALSO enqueue it (double-send). Only the history reload
+                    // is wanted in that case.
+                    .putExtra(EXTRA_DICTATION_ALREADY_SENT, dictationFromWakeWord)
                 sendBroadcast(i)
 
                 // Wake-word path: MainActivity may be paused/dead (the

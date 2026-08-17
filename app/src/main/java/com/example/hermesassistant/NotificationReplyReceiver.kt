@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit
 class NotificationReplyReceiver : BroadcastReceiver() {
 
     companion object {
+        const val ACTION_REPLY = "com.example.hermesassistant.REPLY"
         const val EXTRA_SESSION_ID = "reply_session_id"
         const val EXTRA_SESSION_TITLE = "reply_session_title"
         const val EXTRA_NOTIFY_TITLE = "reply_notify_title"

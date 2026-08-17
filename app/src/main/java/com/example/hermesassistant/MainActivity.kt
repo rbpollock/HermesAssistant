@@ -1,112 +1,100 @@
 package com.example.hermesassistant
 
 import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.media.AudioDeviceInfo
-import android.media.AudioManager
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.app.NotificationCompat
-import androidx.core.app.RemoteInput
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import okhttp3.*
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
+import okio.ByteString
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.util.Locale
-import java.util.concurrent.TimeUnit
 
-import okio.ByteString
+/**
+ * Thin wiring layer: binds the UI, delegates networking to [RelayClient],
+ * audio to [AudioPlayer], and speech recognition to [VoiceInput], and
+ * owns the app-specific glue (history, session chips, notifications,
+ * targeted replies, auto-update).
+ */
+class MainActivity : ComponentActivity() {
 
-import org.json.JSONObject
-
-class MainActivity : AppCompatActivity() {
-
-    private lateinit var speechRecognizer: SpeechRecognizer
+    // UI
     private lateinit var statusText: TextView
     private lateinit var subText: TextView
     private lateinit var speakButton: Button
     private lateinit var statusRing: StatusRingView
     private lateinit var historyList: LinearLayout
-    private lateinit var historyScroll: ScrollView
-    private lateinit var typeToggleButton: android.widget.ImageButton
+    private lateinit var historyScroll: android.widget.ScrollView
+    private lateinit var typeToggleButton: ImageButton
     private lateinit var textInputRow: LinearLayout
-    private lateinit var textInput: android.widget.EditText
-    private lateinit var sendButton: android.widget.ImageButton
+    private lateinit var textInput: EditText
+    private lateinit var sendButton: ImageButton
     private lateinit var sessionChipsRow: LinearLayout
     private lateinit var sessionChipsScroll: android.widget.HorizontalScrollView
-    private lateinit var settingsButton: android.widget.ImageButton
-    private lateinit var chatSection: android.view.View
-    private lateinit var assistantPanel: android.view.View
-    private lateinit var panelCollapseBar: android.view.View
-    private lateinit var panelToggleButton: android.widget.ImageButton
-    private lateinit var panelToggleLabel: android.widget.TextView
+    private lateinit var settingsButton: ImageButton
+    private lateinit var chatSection: View
+    private lateinit var assistantPanel: View
+    private lateinit var panelCollapseBar: View
+    private lateinit var panelToggleButton: ImageButton
+    private lateinit var panelToggleLabel: TextView
+
     private var panelCollapsed = false
     private var navBarInsetBottom = 0
-    private lateinit var notificationManager: NotificationManager
+
+    private lateinit var notificationManager: NotificationManagerCompat
     private lateinit var sessionStore: SessionStore
-    private var tts: TextToSpeech? = null
     private lateinit var chatHistory: ChatHistoryStore
 
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS) // Generous connect timeout for Tailscale
-        .readTimeout(0, TimeUnit.MILLISECONDS) // No read timeout for long LLM responses
-        .pingInterval(15, TimeUnit.SECONDS) // Keep Tailscale NAT alive
-        .retryOnConnectionFailure(true)
-        .build()
-    private var webSocket: WebSocket? = null
+    // Delegates
+    private lateinit var relay: RelayClient
+    private lateinit var audio: AudioPlayer
+    private lateinit var voice: VoiceInput
+
+    // WS state
     private var isConnected = false
     private var pendingMessage: String? = null
-    private var mediaPlayer: MediaPlayer? = null
 
-    // Auto-reconnect loop: when the socket dies (phone sleeps, Tailscale
-    // blips, network switch) keep trying every few seconds instead of
-    // showing a permanent "WS Error" and sitting dead.
-    private val reconnectHandler = android.os.Handler(android.os.Looper.getMainLooper())
-    private var reconnectRunnable: Runnable? = null
-    private var reconnectAttempts = 0
-    private var isConnecting = false
-
-    // For streaming audio chunks
+    // Audio stream accumulation
     private var audioTempFile: File? = null
     private var audioOutputStream: FileOutputStream? = null
 
-    // Wake word + dictation now live in HermesForegroundService (so the
-    // mic stays open while backgrounded). MainActivity just sends it
-    // commands and listens for its broadcasts.
+    // Targeted reply state
+    private var replySessionId: String = ""
+    private var replySessionTitle: String = ""
+
+    // The session a message belongs to (tagged on bubbles)
+    private var activeSessionId: String = ""
+    private var activeSessionTitle: String = ""
+
+    // Offline queue flushing
+    private var flushingQueue = false
+    private var autoListenScheduled = false
+
     private val serviceReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context?, intent: Intent?) {
+        override fun onReceive(context: Context?, intent: Intent?) {
             when (intent?.action) {
                 HermesForegroundService.ACTION_WAKE_WORD -> onWakeWordHeard()
                 HermesForegroundService.ACTION_DICTATION_RESULT -> {
                     val text = intent.getStringExtra(HermesForegroundService.EXTRA_DICTATION_TEXT).orEmpty()
-                    handleDictatedText(text)
+                    val alreadySent = intent.getBooleanExtra(HermesForegroundService.EXTRA_DICTATION_ALREADY_SENT, false)
+                    handleDictatedText(text, alreadySent)
                 }
                 NotificationReplyReceiver.ACTION_HISTORY_UPDATED -> {
                     // An inline reply from the shade appended to the shared
@@ -118,66 +106,36 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Guards against duplicate auto-listen triggers
-    private var autoListenScheduled = false
-
-    // Offline dictation mode: Vosk captures a full phrase instead of
-    // scanning for the wake word, and the text goes to the offline queue.
-    private var dictationMode = false
-    private var dictationWatchdog: Runnable? = null
-    // True while Google STT (startListening) is actively listening, so the
-    // speak button can cancel it (tap-to-cancel, same as dictation).
-    private var sttListening = false
-
-    // True while we are flushing the offline queue after reconnect
-    private var flushingQueue = false
-
-    // Targeted-reply state: set when a notify event carries a session_id,
-    // so the next spoken message is routed back to that session
-    // (answering a clarify prompt or approval request).
-    private var replySessionId: String = ""
-    private var replySessionTitle: String = ""
-
-    // The session the current exchange belongs to — used to tag the
-    // hermes reply bubble with the same session as the user message.
-    private var activeSessionId: String = ""
-    private var activeSessionTitle: String = ""
-
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
         private const val REQ_POST_NOTIFICATIONS = 2
         private const val REQ_RECORD_AUDIO = 3
     }
 
+    // ------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        statusText = findViewById(R.id.statusText)
-        subText = findViewById(R.id.subText)
-        speakButton = findViewById(R.id.speakButton)
-        statusRing = findViewById(R.id.statusRing)
-        historyList = findViewById(R.id.historyList)
-        historyScroll = findViewById(R.id.historyScroll)
-        typeToggleButton = findViewById(R.id.typeToggleButton)
-        textInputRow = findViewById(R.id.textInputRow)
-        textInput = findViewById(R.id.textInput)
-        sendButton = findViewById(R.id.sendButton)
-        sessionChipsRow = findViewById(R.id.sessionChipsRow)
-        sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
-        settingsButton = findViewById(R.id.settingsButton)
-        chatSection = findViewById(R.id.chatSection)
-        assistantPanel = findViewById(R.id.assistantPanel)
-        panelCollapseBar = findViewById(R.id.panelCollapseBar)
-        panelToggleButton = findViewById(R.id.panelToggleButton)
-        panelToggleLabel = findViewById(R.id.panelToggleLabel)
-        notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        bindViews()
+        notificationManager = NotificationManagerCompat.from(this)
         sessionStore = SessionStore(this)
         chatHistory = ChatHistoryStore(this)
 
+        relay = RelayClient(this)
+        audio = AudioPlayer(this)
+        voice = VoiceInput(this)
+
+        wireRelay()
+        wireAudio()
+        wireVoice()
+
         createNotificationChannel()
         startHermesForegroundService()
-        initTts()
+        audio.initTts()
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO)
@@ -188,77 +146,10 @@ class MainActivity : AppCompatActivity() {
         }
         requestNotificationPermissionIfNeeded()
 
-        setupSpeechRecognizer()
-        connectWebSocket()
-        renderHistory()
-        updateQueueBadge()
-        renderSessionChips()
-
-        speakButton.setOnClickListener {
-            if (dictationMode) {
-                // Tap again while dictating = cancel
-                exitDictationMode()
-            } else if (sttListening) {
-                // Tap while Google STT is listening = cancel
-                cancelStt()
-            } else if (!isConnected) {
-                // Offline: transcribe locally with Vosk and queue the message
-                startOfflineDictation()
-            } else if (mediaPlayer == null && audioTempFile != null && !isSpeaking && playbackQueue.isEmpty()) {
-                // A response is waiting (no Bluetooth autoplay happened) — tap plays it
-                playPendingAudio()
-            } else {
-                startListening()
-            }
-        }
-
-        // Circular keyboard icon: ~12% of screen width, top-right of the
-        // bottom section. The soft keyboard ONLY shows when this icon is
-        // pressed — never on assistant activation.
-        val iconSize = (resources.displayMetrics.widthPixels * 0.12f).toInt()
-        typeToggleButton.layoutParams = typeToggleButton.layoutParams.apply { width = iconSize; height = iconSize }
-        typeToggleButton.setOnClickListener {
-            val showing = textInputRow.visibility == View.VISIBLE
-            textInputRow.visibility = if (showing) View.GONE else View.VISIBLE
-            if (!showing) {
-                textInput.requestFocus()
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                imm.showSoftInput(textInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
-            } else {
-                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                imm.hideSoftInputFromWindow(textInput.windowToken, 0)
-            }
-        }
-
-        // Send typed text (both the send icon and the IME action)
-        val sendAction = {
-            val text = textInput.text?.toString().orEmpty()
-            if (text.isNotBlank()) {
-                textInput.text?.clear()
-                sendUserMessage(text)
-            }
-        }
-        sendButton.setOnClickListener { sendAction() }
-        textInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEND) {
-                sendAction()
-                true
-            } else {
-                false
-            }
-        }
-
-        // Gear icon (top-left): open settings
-        settingsButton.setOnClickListener {
-            startActivity(Intent(this, SettingsActivity::class.java))
-        }
-
-        // Down/up chevron band: collapse the listening panel so the chat
-        // (and text input) takes the whole screen; tap again to expand.
-        // The whole band is tappable (button inside is non-clickable).
-        panelCollapseBar.setOnClickListener {
-            togglePanelCollapsed()
-        }
+        wireTextInput()
+        wireSessionChips()
+        wirePanelToggle()
+        wireSettings()
 
         // Make the collapsed band clear the navigation bar from the start.
         panelCollapseBar.post { updateNavBarInset() }
@@ -266,135 +157,27 @@ class MainActivity : AppCompatActivity() {
         // Auto-start listening whenever the activity loads. The speak
         // button becomes "TAP TO CANCEL" while listening, so the user can
         // always stop it. (Voice-invocation intents hit this same path.)
-        if (isConnected) startListening() else startOfflineDictation()
+        beginListening()
 
         // Auto-update: the "Update" notification action lands here.
         if (isUpdateAction(intent?.action)) {
             handleUpdateAction()
         }
 
-        // Notification tap: select the session chip for that notification
+        // Notification tap: select the session chip for that notification.
         handleTargetSessionIntent(intent)
     }
 
-    /** True when the intent asks us to act as the voice assistant. */
-    private fun isVoiceInvocation(action: String?): Boolean {
-        return action == Intent.ACTION_ASSIST
-            || action == Intent.ACTION_VOICE_COMMAND
-            || action == "com.example.hermesassistant.START_LISTENING"
-    }
-
-    /** Auto-update notification action: "Update" on the update notification. */
-    private fun isUpdateAction(action: String?): Boolean {
-        return action == "com.example.hermesassistant.ACTION_UPDATE"
-    }
-
-    /**
-     * If launched by tapping a notification, arm the reply target for the
-     * session that produced it and highlight its chip.
-     */
-    private fun handleTargetSessionIntent(intent: Intent?) {
-        val sessionId = intent?.getStringExtra("target_session_id").orEmpty()
-        if (sessionId.isEmpty()) return
-
-        val title = intent?.getStringExtra("target_session_title").orEmpty()
-
-        // Make sure it's known to the chip list (e.g. after app restart)
-        sessionStore.upsert(
-            KnownSession(
-                id = sessionId,
-                title = sessionTitleFromNotify(title, sessionId),
-            )
-        )
-        replySessionId = sessionId
-        replySessionTitle = title
-        updateReplyBadge()
-        renderSessionChips()
-
-        // Also surface the message context in the history if it was a notify
-        val msg = intent?.getStringExtra("target_message").orEmpty()
-        if (msg.isNotEmpty()) {
-            chatHistory.append(ChatMessage("notify", "$title — $msg"))
-            renderHistory()
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent) // keep getIntent() in sync for singleTask relaunch
+        if (isVoiceInvocation(intent.action)) {
+            beginListening()
         }
-    }
-
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                NOTIFICATION_CHANNEL,
-                "Hermes Agent Events",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Alerts when Hermes finishes a session or needs your input"
-            }
-            notificationManager.createNotificationChannel(channel)
+        if (isUpdateAction(intent.action)) {
+            handleUpdateAction()
         }
-    }
-
-    private fun initTts() {
-        tts = TextToSpeech(this) { status ->
-            if (status == TextToSpeech.SUCCESS) {
-                tts?.language = Locale.US
-            }
-        }
-        // Register the progress listener immediately (valid before init
-        // completes; re-registered in the callback too). onDone drives the
-        // unified playback queue, so without this a TTS alert could stall
-        // every later audio item forever.
-        registerTtsListener()
-    }
-
-    private fun registerTtsListener() {
-        tts?.setOnUtteranceProgressListener(object : android.speech.tts.UtteranceProgressListener() {
-            override fun onStart(utteranceId: String?) {}
-            override fun onDone(utteranceId: String?) {
-                runOnUiThread { onPlaybackItemDone() }
-            }
-            @Deprecated("Deprecated in Java")
-            override fun onError(utteranceId: String?) {
-                runOnUiThread { onPlaybackItemDone() }
-            }
-            override fun onError(utteranceId: String?, errorCode: Int) {
-                runOnUiThread { onPlaybackItemDone() }
-            }
-        })
-    }
-
-    private fun requestNotificationPermissionIfNeeded() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS)
-        }
-    }
-
-    /** Start the foreground service that keeps the app alive in the background. */
-    private fun startHermesForegroundService() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(Intent(this, HermesForegroundService::class.java))
-            } else {
-                startService(Intent(this, HermesForegroundService::class.java))
-            }
-        } catch (e: Exception) {
-            // e.g. BackgroundServiceStartNotAllowedException — app not
-            // in a state to start it right now; will start next launch.
-        }
-    }
-
-    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQ_RECORD_AUDIO) {
-            // The wake word lives in the foreground service, which started
-            // before the user tapped "Allow" — now that we have the mic,
-            // tell it to start listening. (This was the fresh-install bug:
-            // Vosk tried to grab the mic before permission was granted and
-            // nothing ever retried.)
-            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                HermesForegroundService.notifyMicPermissionGranted()
-            }
-        }
+        handleTargetSessionIntent(intent)
     }
 
     override fun onResume() {
@@ -420,10 +203,9 @@ class MainActivity : AppCompatActivity() {
         HermesForegroundService.hideOverlayIfShown()
 
         // Update check on every foreground (throttled to 1h internally).
-        // Runs here rather than onCreate because MainActivity is singleTask
-        // and the foreground service keeps the process alive, so onCreate
-        // fires once per process — onResume fires on every open.
         UpdateChecker.checkAndNotify(this)
+
+        connectIfNeeded()
     }
 
     override fun onPause() {
@@ -431,248 +213,78 @@ class MainActivity : AppCompatActivity() {
         try { unregisterReceiver(serviceReceiver) } catch (e: Exception) { /* not registered */ }
     }
 
-    /** Open this app's notification settings page (where the toggle lives). */
-    private fun openNotificationSettings() {
-        try {
-            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
-            }
-            startActivity(intent)
-        } catch (e: Exception) {
-            // Fallback: app details page
-            try {
-                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.parse("package:$packageName")
-                })
-            } catch (e2: Exception) {
-                setStatus("Enable notifications in system settings", StatusRingView.State.IDLE)
-            }
-        }
+    override fun onDestroy() {
+        super.onDestroy()
+        relay.cancel()
+        audio.shutdown()
+        voice.shutdown()
+        try { audioOutputStream?.close() } catch (e: Exception) {}
+        audioOutputStream = null
     }
 
     // ------------------------------------------------------------------
-    // Auto-update (GitHub releases)
+    // View binding
     // ------------------------------------------------------------------
 
-    /** Current installed versionName, e.g. "1.6.23". */
-    private fun currentVersion(): String {
-        return try {
-            packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
-        } catch (e: Exception) {
-            "?"
-        }
-    }
-
-    /** Handle the "Update" action: download the APK and hand to the installer. */
-    private fun handleUpdateAction() {
-        val apkUrl = intent.getStringExtra("update_apk_url").orEmpty()
-        val version = intent.getStringExtra("update_version").orEmpty()
-        if (apkUrl.isEmpty()) {
-            // No direct APK asset — just open the release page
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
-            return
-        }
-        val release = UpdateChecker.ReleaseInfo(
-            versionName = version.ifEmpty { "latest" },
-            apkUrl = apkUrl,
-            releaseUrl = UpdateChecker.RELEASE_PAGE_URL,
-            tagName = version.ifEmpty { "latest" },
-        )
-        setStatus("Downloading update...", StatusRingView.State.LISTENING)
-        Thread {
-            val message = UpdateChecker.installRelease(this, release)
-            runOnUiThread {
-                if (message.startsWith("Update failed")) {
-                    setStatus(message, StatusRingView.State.IDLE)
-                } else {
-                    setStatus(message, StatusRingView.State.LISTENING)
-                }
-            }
-        }.start()
+    private fun bindViews() {
+        statusText = findViewById(R.id.statusText)
+        subText = findViewById(R.id.subText)
+        speakButton = findViewById(R.id.speakButton)
+        statusRing = findViewById(R.id.statusRing)
+        historyList = findViewById(R.id.historyList)
+        historyScroll = findViewById(R.id.historyScroll)
+        typeToggleButton = findViewById(R.id.typeToggleButton)
+        textInputRow = findViewById(R.id.textInputRow)
+        textInput = findViewById(R.id.textInput)
+        sendButton = findViewById(R.id.sendButton)
+        sessionChipsRow = findViewById(R.id.sessionChipsRow)
+        sessionChipsScroll = findViewById(R.id.sessionChipsScroll)
+        settingsButton = findViewById(R.id.settingsButton)
+        chatSection = findViewById(R.id.chatSection)
+        assistantPanel = findViewById(R.id.assistantPanel)
+        panelCollapseBar = findViewById(R.id.panelCollapseBar)
+        panelToggleButton = findViewById(R.id.panelToggleButton)
+        panelToggleLabel = findViewById(R.id.panelToggleLabel)
     }
 
     // ------------------------------------------------------------------
-    // Wake word + offline dictation — owned by HermesForegroundService
+    // Delegate wiring
     // ------------------------------------------------------------------
 
-    /** Ask the foreground service to start/keep the wake word running. */
-    private fun startWakeWord() {
-        HermesForegroundService.startWakeWordNow()
-        speakButton.text = "LISTENING FOR WAKE WORD"
-        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
-    }
-
-    /** Free the mic for the Google speech recognizer. */
-    private fun stopWakeWordForStt() {
-        HermesForegroundService.stopWakeWord()
-    }
-
-    /** Tell the service to transcribe the next phrase (offline dictation). */
-    private fun startOfflineDictation() {
-        dictationMode = true
-        expandPanel()
-        ChimePlayer.playStart(this)
-        speakButton.text = "TAP TO CANCEL"
-        setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
-        HermesForegroundService.startDictation()
-
-        // Keep trying to reach the server in the background so queued
-        // messages flush as soon as the link returns.
-        connectWebSocket()
-
-        // If the user says nothing, fall back to wake-word mode after 20s
-        // (a bit longer than the 15s STT default — people pause to think).
-        dictationWatchdog?.let { statusText.removeCallbacks(it) }
-        dictationWatchdog = Runnable {
-            if (dictationMode) {
-                exitDictationMode()
-            }
-        }.also { statusText.postDelayed(it, 20000) }
-    }
-
-    private fun exitDictationMode() {
-        dictationMode = false
-        dictationWatchdog?.let { statusText.removeCallbacks(it) }
-        dictationWatchdog = null
-        speakButton.text = "LISTENING FOR WAKE WORD"
-        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
-        startWakeWord()
-    }
-
-    /** The service heard "Hey Hermes" — take over from the wake word. */
-    private fun onWakeWordHeard() {
-        runOnUiThread {
-            expandPanel()
-            speakButton.text = "TAP TO SPEAK TO HERMES"
-            if (isConnected) startListening() else startOfflineDictation()
-        }
-    }
-
-    /** A full phrase was captured by Vosk while offline — queue it. */
-    private fun handleDictatedText(hypothesis: String?) {
-        val text = (hypothesis ?: "").trim()
-        dictationMode = false
-        dictationWatchdog?.let { statusText.removeCallbacks(it) }
-        dictationWatchdog = null
-
-        if (text.isNotEmpty()) {
-            // Strip a leading wake word if the model caught it
-            val clean = text
-                .replaceFirst("(?i)^(hey )?hermes[\\s,.-]*".toRegex(), "")
-                .trim()
-            if (clean.isNotEmpty()) {
-                chatHistory.enqueue(clean)
-                renderHistory()
-                updateQueueBadge()
-                setStatus("Offline — queued: $clean", StatusRingView.State.CONNECTED)
-            }
-        }
-
-        // Keep trying to reach the server so the queue flushes
-        connectWebSocket()
-
-        // Back to wake-word listening
-        startWakeWord()
-    }
-
-    // ------------------------------------------------------------------
-    // WebSocket connection
-    // ------------------------------------------------------------------
-
-    private fun connectWebSocket() {
-        if (isConnected || isConnecting) return
-
-        isConnecting = true
-        webSocket?.cancel()
-
-        val request = Request.Builder()
-            .url("${ServerConfig.wsBase(this)}/chat/stream")
-            .build()
-
-        webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
+    private fun wireRelay() {
+        relay.attach(object : RelayClient.Listener {
+            override fun onConnected() {
                 isConnected = true
-                isConnecting = false
-                reconnectAttempts = 0
-                stopReconnectLoop()
-                runOnUiThread {
-                    setStatus("Connected to server", StatusRingView.State.CONNECTED)
-                    pendingMessage?.let {
-                        webSocket.send(it)
-                        pendingMessage = null
-                    }
-                    // Feature 4: flush anything queued while offline
-                    flushQueueIfAny()
+                setStatus("Connected to server", StatusRingView.State.CONNECTED)
+                pendingMessage?.let {
+                    if (relay.send(it)) pendingMessage = null
                 }
+                flushQueueIfAny()
             }
 
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            override fun onDisconnected(reason: String) {
                 isConnected = false
-                isConnecting = false
-                runOnUiThread { setStatus("Connection closed — reconnecting...", StatusRingView.State.IDLE) }
-                scheduleReconnect()
+                setStatus(reason, StatusRingView.State.IDLE)
             }
 
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                isConnected = false
-                isConnecting = false
-                runOnUiThread {
-                    setStatus("WS Error: ${t.message} — retrying...", StatusRingView.State.IDLE)
-                }
-                scheduleReconnect()
+            override fun onTextResponse(message: String) {
+                setStatus("Hermes: $message", StatusRingView.State.CONNECTED)
+                audio.rememberSpokenResponse(message)
+                chatHistory.append(
+                    ChatMessage("hermes", message, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
+                )
+                renderHistory()
             }
 
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                runOnUiThread {
-                    try {
-                        val json = JSONObject(text)
-                        val type = json.optString("type")
-                        when (type) {
-                            "text" -> {
-                                setStatus("Hermes: ${json.optString("message")}", StatusRingView.State.CONNECTED)
-                                // Remember the response text so the follow-up
-                                // "Hermes finished" notify doesn't re-read it
-                                // over the audio (chorus/echo fix).
-                                val msg = json.optString("message")
-                                if (msg.isNotEmpty()) lastSpokenResponseText = msg
-                                chatHistory.append(
-                                    ChatMessage(
-                                        "hermes",
-                                        msg,
-                                        sessionId = activeSessionId,
-                                        sessionTitle = activeSessionTitle,
-                                    )
-                                )
-                                renderHistory()
-                            }
-                            "status" -> {
-                                setStatus(json.optString("message"), StatusRingView.State.THINKING)
-                            }
-                            "audio_end" -> {
-                                playAudioStream()
-                                // If flushing queued messages, send the next one now
-                                if (flushingQueue) sendNextQueued()
-                            }
-                            "notify" -> {
-                                handleNotify(json)
-                            }
-                        }
-                    } catch (e: Exception) {
-                        // Any failure in the message path lands here. Show the
-                        // REAL exception (not just the raw frame) so the
-                        // status line tells us what actually broke. Note: a
-                        // valid-JSON notify that fails inside handleNotify()
-                        // ALSO lands here — that's why we log e.message.
-                        val diag = "⚠ WS msg error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"
-                        chatHistory.append(ChatMessage("notify", diag))
-                        renderHistory()
-                        setStatus(diag, StatusRingView.State.CONNECTED)
-                    }
-                }
+            override fun onStatus(message: String) {
+                setStatus(message, StatusRingView.State.THINKING)
             }
 
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // Receive streaming raw MP3 byte chunks
+            override fun onNotify(json: JSONObject) {
+                handleNotify(json)
+            }
+
+            override fun onAudioBytes(bytes: ByteString) {
                 if (audioOutputStream == null) {
                     audioTempFile = File(cacheDir, "stream_${System.currentTimeMillis()}.mp3")
                     audioOutputStream = FileOutputStream(audioTempFile)
@@ -683,26 +295,191 @@ class MainActivity : AppCompatActivity() {
                     // ignore
                 }
             }
+
+            override fun onAudioEnd() {
+                audioOutputStream?.close()
+                audioOutputStream = null
+                audioTempFile?.let { audio.playAudio(it) }
+                if (flushingQueue) sendNextQueued()
+            }
         })
     }
 
-    /** Exponential-ish reconnect: 2s, 4s, 8s... capped at 30s. */
-    private fun scheduleReconnect() {
-        if (reconnectRunnable != null) return // already scheduled
-        val delay = minOf(30000L, 2000L shl minOf(reconnectAttempts, 4))
-        reconnectAttempts++
-        val runnable = Runnable {
-            reconnectRunnable = null
-            connectWebSocket()
-        }
-        reconnectRunnable = runnable
-        reconnectHandler.postDelayed(runnable, delay)
+    private fun wireAudio() {
+        audio.attach(object : AudioPlayer.Listener {
+            override fun onQueueEmpty() {
+                scheduleAutoListen()
+            }
+
+            override fun onSpeakingStarted() {
+                setStatus("Speaking...", StatusRingView.State.SPEAKING)
+            }
+
+            override fun onSpeakingStopped() {}
+
+            override fun onStatus(message: String) {
+                setStatus(message, StatusRingView.State.CONNECTED)
+            }
+        })
     }
 
-    private fun stopReconnectLoop() {
-        reconnectRunnable?.let { reconnectHandler.removeCallbacks(it) }
-        reconnectRunnable = null
-        reconnectAttempts = 0
+    private fun wireVoice() {
+        voice.attach(object : VoiceInput.Listener {
+            override fun onTextCaptured(text: String) {
+                sendUserMessage(text)
+            }
+
+            override fun onStateChanged(state: VoiceInput.State) {
+                when (state) {
+                    VoiceInput.State.STT,
+                    VoiceInput.State.DICTATION -> speakButton.text = "TAP TO CANCEL"
+                    VoiceInput.State.IDLE -> speakButton.text = "LISTENING FOR WAKE WORD"
+                }
+            }
+
+            override fun onError(message: String) {
+                ChimePlayer.playStop(this@MainActivity)
+                if (!isConnected) {
+                    // Offline: fall back to Vosk dictation
+                    startOfflineDictation()
+                } else {
+                    setStatus("$message. Try again.", StatusRingView.State.IDLE)
+                    startWakeWord()
+                }
+            }
+
+            override fun onListening() {
+                ChimePlayer.playStart(this@MainActivity)
+                expandPanel()
+            }
+
+            override fun onStoppedListening() {
+                ChimePlayer.playStop(this@MainActivity)
+            }
+
+            override fun onThinking() {
+                setStatus("Thinking...", StatusRingView.State.THINKING)
+            }
+        })
+    }
+
+    // ------------------------------------------------------------------
+    // Listening flow (orchestrates service wake word + VoiceInput)
+    // ------------------------------------------------------------------
+
+    /** Free the mic and start Google STT (or Vosk when offline). */
+    private fun beginListening() {
+        stopWakeWordForStt()
+        expandPanel()
+        if (isConnected) {
+            voice.startListening()
+        } else {
+            voice.startOfflineDictation()
+        }
+    }
+
+    private fun startOfflineDictation() {
+        expandPanel()
+        voice.startOfflineDictation()
+    }
+
+    /** The service heard "Hey Hermes" — take over from the wake word. */
+    private fun onWakeWordHeard() {
+        runOnUiThread {
+            expandPanel()
+            beginListening()
+        }
+    }
+
+    /** Back to wake-word mode (used after errors / cancelled listens). */
+    private fun startWakeWord() {
+        HermesForegroundService.startWakeWordNow()
+        speakButton.text = "LISTENING FOR WAKE WORD"
+        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
+    }
+
+    private fun stopWakeWordForStt() {
+        HermesForegroundService.stopWakeWord()
+    }
+
+    /** A full phrase was captured by Vosk while offline — queue it. */
+    private fun handleDictatedText(hypothesis: String?, alreadySent: Boolean = false) {
+        val text = (hypothesis ?: "").trim()
+        voice.onDictationResult(text)
+
+        if (text.isNotEmpty()) {
+            // Strip a leading wake word if the model caught it
+            val clean = text
+                .replaceFirst("(?i)^(hey )?hermes[\\s,.-]*".toRegex(), "")
+                .trim()
+            if (clean.isNotEmpty() && !alreadySent) {
+                // Only enqueue when the service did NOT already POST the
+                // phrase (wake-word path sends it directly over HTTP).
+                chatHistory.enqueue(clean)
+                renderHistory()
+                updateQueueBadge()
+                setStatus("Offline — queued: $clean", StatusRingView.State.CONNECTED)
+            } else {
+                // Already sent by the service — just reflect it in history.
+                chatHistory.append(ChatMessage("user", clean))
+                renderHistory()
+            }
+        }
+
+        // Keep trying to reach the server so the queue flushes
+        connectIfNeeded()
+
+        // Back to wake-word listening
+        startWakeWord()
+    }
+
+    private fun connectIfNeeded() {
+        if (!relay.isConnected) relay.connect()
+    }
+
+    // ------------------------------------------------------------------
+    // Sending
+    // ------------------------------------------------------------------
+
+    /** Shared send path for both voice and typed text. */
+    private fun sendUserMessage(rawText: String) {
+        val userText = rawText.trim()
+        if (userText.isEmpty()) return
+
+        activeSessionId = replySessionId
+        activeSessionTitle = replySessionTitle
+
+        chatHistory.append(
+            ChatMessage("user", userText, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
+        )
+        renderHistory()
+        setStatus("You: $userText", StatusRingView.State.THINKING)
+
+        val payload = if (replySessionId.isNotEmpty()) {
+            "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
+        } else {
+            userText
+        }
+
+        if (relay.send(payload)) {
+            // Sent successfully — clear the targeted reply
+            if (replySessionId.isNotEmpty()) {
+                replySessionId = ""
+                replySessionTitle = ""
+                runOnUiThread {
+                    updateReplyBadge()
+                    renderSessionChips()
+                }
+            }
+        } else {
+            // Offline (or dropped mid-send): queue it persistently
+            isConnected = false
+            setStatus("Offline — message queued", StatusRingView.State.IDLE)
+            chatHistory.enqueue(userText)
+            renderHistory()
+            updateQueueBadge()
+            connectIfNeeded()
+        }
     }
 
     // ------------------------------------------------------------------
@@ -726,7 +503,7 @@ class MainActivity : AppCompatActivity() {
         renderHistory()
         updateQueueBadge()
         setStatus("Sending queued: ${next.text}", StatusRingView.State.THINKING)
-        if (isConnected && webSocket?.send(next.text) == true) {
+        if (relay.send(next.text)) {
             // Response will arrive via onMessage; audio_end triggers the next send
         } else {
             // Send failed — put it back at the front and try again later
@@ -735,12 +512,12 @@ class MainActivity : AppCompatActivity() {
             renderHistory()
             updateQueueBadge()
             setStatus("Reconnect lost — message re-queued", StatusRingView.State.IDLE)
-            connectWebSocket()
+            connectIfNeeded()
         }
     }
 
     // ------------------------------------------------------------------
-    // Notify events from ANY Hermes session (shell hooks -> server relay)
+    // Notify events from ANY Hermes session
     // ------------------------------------------------------------------
 
     private fun handleNotify(json: JSONObject) {
@@ -750,10 +527,6 @@ class MainActivity : AppCompatActivity() {
         val host = json.optString("host", "")
         val sessionId = json.optString("session_id", "")
 
-        // De-dupe: if this exact event was already shown within the last
-        // few seconds (e.g. a reconnect flushed the same payload twice),
-        // skip the system notification + TTS alert. History and status
-        // still update, so nothing looks lost — the user just isn't
         // Short-window dedupe for identical notify events (reconnect replay).
         val isDuplicate = isDuplicateNotify(kind, title, message, sessionId)
 
@@ -770,21 +543,9 @@ class MainActivity : AppCompatActivity() {
         // can be routed back to it (answering a clarify prompt, etc.).
         if (sessionId.isNotEmpty()) {
             replySessionId = sessionId
-            replySessionTitle = title
-            runOnUiThread { updateReplyBadge() }
-
-            // Track it in the session chip list
-            sessionStore.upsert(
-                KnownSession(
-                    id = sessionId,
-                    title = sessionTitleFromNotify(title, sessionId),
-                    host = host,
-                )
-            )
-            runOnUiThread { renderSessionChips() }
+            replySessionTitle = if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else ""
         }
 
-        setStatus("$title\n$message", StatusRingView.State.CONNECTED)
         chatHistory.append(
             ChatMessage(
                 "notify",
@@ -800,24 +561,17 @@ class MainActivity : AppCompatActivity() {
             try {
                 showSystemNotification(title, message, host, urgent, sessionId)
             } catch (e: Exception) {
-                // A notification failure must not kill the message pipeline;
-                // log it so it's visible instead of being misreported as a
-                // parse error by the WS handler's catch-all.
+                // A notification failure must not kill the message pipeline.
                 chatHistory.append(ChatMessage("notify", "⚠ notify error: ${e.javaClass.simpleName}: ${e.message?.take(120)}"))
                 renderHistory()
             }
 
-            // Speak the alert aloud ONLY when a Bluetooth device is connected,
-            // and route it through the playback queue so it never talks over
-            // response audio that's already playing. Skip when the server
-            // flagged this as the same response the audio already spoke
-            // (already_spoken), or when the text matches the last response
-            // we played (fallback for older relays) — both caused the
-            // echo/chorus effect.
+            // Speak the alert ONLY when a Bluetooth device is connected and
+            // the server didn't flag it as already-spoken response audio
+            // (echo/chorus fix), and it's not the response text we just played.
             val serverSaysSpoken = json.optBoolean("already_spoken", false)
-            val isResponseEcho = message.isNotEmpty() && message == lastSpokenResponseText
-            if (isBluetoothConnected() && !serverSaysSpoken && !isResponseEcho) {
-                enqueuePlayback(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
+            if (!serverSaysSpoken && !audio.isResponseEcho(message)) {
+                audio.speakAlert(title, message)
             }
         }
     }
@@ -827,7 +581,6 @@ class MainActivity : AppCompatActivity() {
     private fun isDuplicateNotify(kind: String, title: String, message: String, sessionId: String): Boolean {
         val now = System.currentTimeMillis()
         val windowMs = 10_000L
-        // Drop entries older than the window
         while (recentNotifyFingerprints.isNotEmpty() &&
             now - recentNotifyFingerprints.first().first > windowMs
         ) {
@@ -839,275 +592,44 @@ class MainActivity : AppCompatActivity() {
         return dup
     }
 
-    /** Show a "reply to <session>" hint when a targeted reply is armed. */
-    private fun updateReplyBadge() {
-        subText.text = if (replySessionId.isNotEmpty()) {
-            "Reply goes to: $replySessionTitle — tap to speak"
-        } else {
-            val n = chatHistory.queue.size
-            if (n > 0) {
-                "$n message${if (n == 1) "" else "s"} queued — will send when connected"
-            } else {
-                "Tap to speak · wake word: \"Hey Hermes\""
-            }
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Session chips — pick which session to talk to
-    // ------------------------------------------------------------------
-
-    /** Parse a friendly title out of a notify title (e.g. "Hermes finished · <title>"). */
-    private fun sessionTitleFromNotify(title: String, sessionId: String): String {
-        val idx = title.indexOf("·")
-        if (idx >= 0 && idx + 1 < title.length) {
-            val after = title.substring(idx + 1).trim()
-            if (after.isNotEmpty()) return after
-        }
-        // Fall back to a short id so the chip still means something
-        return if (sessionId.length > 12) "…${sessionId.takeLast(10)}" else sessionId
-    }
-
-    // ------------------------------------------------------------------
-    // Session color-coding: every session gets a stable, deterministic
-    // color (picked from a dark-theme-friendly palette by hashing the
-    // session id) so chips and bubbles are visually distinguishable.
-    // ------------------------------------------------------------------
-    private val sessionPalette = intArrayOf(
-        0xFF60A5FA.toInt(), // blue
-        0xFF34D399.toInt(), // green
-        0xFFFBBF24.toInt(), // amber
-        0xFFF472B6.toInt(), // pink
-        0xFFA78BFA.toInt(), // violet
-        0xFF22D3EE.toInt(), // cyan
-        0xFFFB923C.toInt(), // orange
-        0xFF4ADE80.toInt(), // light green
-        0xFFF87171.toInt(), // red
-        0xFFE879F9.toInt(), // fuchsia
-    )
-
-    /** Stable per-session color; empty session (daily chat) gets neutral. */
-    private fun sessionColor(sessionId: String): Int {
-        if (sessionId.isEmpty()) return 0xFF60A5FA.toInt() // default blue
-        val idx = (sessionId.hashCode() and 0x7fffffff) % sessionPalette.size
-        return sessionPalette[idx]
-    }
-
-    /** Render the horizontal session chips; the selected one is highlighted. */
-    private fun renderSessionChips() {
-        sessionChipsRow.removeAllViews()
-        if (sessionStore.sessions.isEmpty()) return
-
-        sessionStore.sessions.forEach { session ->
-            val isSelected = session.id == replySessionId
-            val color = sessionColor(session.id)
-            val chip = TextView(this).apply {
-                text = session.title
-                textSize = 12f
-                setTextColor(if (isSelected) 0xFF0B1220.toInt() else color)
-                setPadding(dp(14), dp(8), dp(14), dp(8))
-                isClickable = true
-                isFocusable = true
-                background = chipBackground(isSelected, color)
-                setOnClickListener {
-                    if (replySessionId == session.id) {
-                        // Tap again to untarget (back to default daily session)
-                        replySessionId = ""
-                        replySessionTitle = ""
-                    } else {
-                        replySessionId = session.id
-                        replySessionTitle = session.title
-                    }
-                    updateReplyBadge()
-                    renderSessionChips()
-                }
-            }
-            sessionChipsRow.addView(
-                chip,
-                LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { marginEnd = dp(8) }
-            )
-        }
-
-        // Scroll the band so the SELECTED chip is visible (centered if it
-        // fits); if nothing is selected, show the newest chip at the end.
-        val selIndex = sessionStore.sessions.indexOfFirst { it.id == replySessionId }
-        sessionChipsScroll.post {
-            if (selIndex >= 0) {
-                val chipView = sessionChipsRow.getChildAt(selIndex) ?: return@post
-                val target = (chipView.left - (sessionChipsScroll.width - chipView.width) / 2).coerceAtLeast(0)
-                sessionChipsScroll.smoothScrollTo(target, 0)
-            } else {
-                sessionChipsScroll.fullScroll(View.FOCUS_RIGHT)
-            }
-        }
-    }
-
-    private fun chipBackground(selected: Boolean, color: Int) = GradientDrawable().apply {
-        cornerRadius = dp(16).toFloat()
-        if (selected) {
-            setColor(color)
-        } else {
-            setColor(0xFF1E293B.toInt())
-            setStroke(dp(1), color)
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Sliding panel: collapse/expand the bottom listening panel.
-    // Collapsed = chat fills the screen (text input stays visible above
-    // the keyboard via adjustResize); the arrow bar flips direction.
-    // ------------------------------------------------------------------
-    private fun togglePanelCollapsed() {
-        panelCollapsed = !panelCollapsed
-        applyPanelCollapsed()
-    }
-
-    private fun applyPanelCollapsed() {
-        assistantPanel.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
-        panelToggleButton.setImageResource(
-            if (panelCollapsed) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down
-        )
-        panelToggleLabel.text = if (panelCollapsed) "Expand panel" else "Collapse panel"
-        panelToggleButton.contentDescription =
-            if (panelCollapsed) "Expand assistant panel" else "Collapse assistant panel"
-
-        // When collapsed the band is the bottom-most element — keep it
-        // ABOVE the system navigation bar (gesture zone) so it stays fully
-        // visible and tappable. When expanded the assistant panel sits
-        // below it, so no extra bottom padding is needed.
-        panelCollapseBar.setPadding(
-            panelCollapseBar.paddingLeft,
-            panelCollapseBar.paddingTop,
-            panelCollapseBar.paddingRight,
-            if (panelCollapsed) navBarInsetBottom else 0
-        )
-
-        // When collapsed, hold the EXPAND band ~5% above the bottom of the
-        // chat: pad the chat section's bottom so the band floats higher
-        // than flush against the chat content. When expanded the assistant
-        // panel occupies that space, so padding returns to 0.
-        val lift = if (panelCollapsed) (resources.displayMetrics.heightPixels * 0.05f).toInt() else 0
-        chatSection.setPadding(
-            chatSection.paddingLeft,
-            chatSection.paddingTop,
-            chatSection.paddingRight,
-            lift
-        )
-    }
-
-    /**
-     * Read the current navigation-bar inset so the collapsed band clears
-     * the gesture/soft-button zone. Called after layout and on window
-     * focus changes (the inset can change when the nav bar hides/shows).
-     */
-    private fun updateNavBarInset() {
-        try {
-            val insets = androidx.core.view.ViewCompat.getRootWindowInsets(window.decorView)
-            navBarInsetBottom = insets
-                ?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())
-                ?.bottom
-                ?: 0
-            applyPanelCollapsed()
-        } catch (e: Exception) {
-            navBarInsetBottom = 0
-        }
-    }
-
-    override fun onWindowFocusChanged(hasFocus: Boolean) {
-        super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) updateNavBarInset()
-    }
-
-    /** Force the panel back to expanded (e.g. when the user starts speaking). */
-    private fun expandPanel() {
-        if (panelCollapsed) {
-            panelCollapsed = false
-            applyPanelCollapsed()
-        }
-    }
-
     private fun showSystemNotification(title: String, message: String, host: String, urgent: Boolean, sessionId: String = "") {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            // Don't fail silently — tell the user where to fix it, re-request
-            // (works if they previously dismissed the dialog), and make the
-            // status line tappable to open notification settings.
-            setStatus("Notifications blocked — tap here to enable", StatusRingView.State.CONNECTED)
-            statusText.isClickable = true
-            statusText.setOnClickListener { openNotificationSettings() }
-            requestNotificationPermissionIfNeeded()
-            return
-        }
-        statusText.setOnClickListener(null)
-        statusText.isClickable = false
-
-        // sessionId.hashCode() can be negative; Samsung silently drops
-        // notifications with negative IDs. Mask the sign bit so IDs are
-        // always in the non-negative range, and shift into 100+ so they
-        // never collide with the foreground service (ID 1) or the reply
-        // notifications (200+).
-        val notifId = (sessionId.hashCode() and 0x7fffffff) % 1000000 + 100
-
-        // Tapping the notification opens the app and selects the session
-        // chip for the session that produced this notification.
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra("target_session_id", sessionId)
-            putExtra("target_session_title", title)
-            putExtra("target_message", message)
-        }
-        val pendingIntent = PendingIntent.getActivity(
+        val notifId = sessionId.hashCode().let { if (it < 0) -it else it } + 100
+        val pendingIntent = android.app.PendingIntent.getActivity(
             this,
-            notifId + 100,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            notifId,
+            Intent(this, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra("target_session_id", sessionId)
+                putExtra("target_session_title", title)
+                putExtra("target_message", message)
+            },
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         )
 
-        // "Reply" action: type directly in the notification shade and send
-        // to that session (works even if the app process is not running).
-        val replyIntent = Intent(this, NotificationReplyReceiver::class.java).apply {
-            putExtra(NotificationReplyReceiver.EXTRA_SESSION_ID, sessionId)
-            // Parsed session title (e.g. "Solar Trivia") — not the raw
-            // "Hermes finished · <title>" — so follow-up notifications can
-            // display a clean "Session: <title>" subtext.
-            putExtra(
-                NotificationReplyReceiver.EXTRA_SESSION_TITLE,
-                if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else ""
-            )
-            putExtra(NotificationReplyReceiver.EXTRA_NOTIFY_TITLE, title)
+        // Reply action — the RemoteInput carries the text back through
+        // NotificationReplyReceiver.
+        val replyLabel = "Reply to session"
+        val replyActionIntent = Intent(this, NotificationReplyReceiver::class.java).apply {
+            action = NotificationReplyReceiver.ACTION_REPLY
+            putExtra("session_id", sessionId)
+            putExtra("session_title", title)
         }
-        val replyPendingIntent = PendingIntent.getBroadcast(
+        val replyPendingIntent = android.app.PendingIntent.getBroadcast(
             this,
             notifId + 200,
-            replyIntent,
-            // FLAG_MUTABLE is REQUIRED for actions with RemoteInput on
-            // Android 12+: the system must be able to inject the typed
-            // reply text into the PendingIntent. With FLAG_IMMUTABLE,
-            // NotificationManager.notify() throws IllegalArgumentException
-            // ("PendingIntents attached to actions with remote inputs must
-            // be mutable") and the notification is never posted. The intent
-            // is explicit to our non-exported receiver, so mutability is
-            // safe here.
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+            replyActionIntent,
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_MUTABLE
         )
-        val remoteInput = RemoteInput.Builder(NotificationReplyReceiver.KEY_TEXT_REPLY)
-            .setLabel("Reply to Hermes")
-            .build()
         val replyAction = NotificationCompat.Action.Builder(
             android.R.drawable.ic_menu_send,
-            "Reply",
+            replyLabel,
             replyPendingIntent
-        ).addRemoteInput(remoteInput).build()
+        ).addRemoteInput(
+            androidx.core.app.RemoteInput.Builder("reply_text").setLabel(replyLabel).build()
+        ).build()
 
-        // Android Auto support: messaging-style notifications surface in the
-        // car's notification list and enable voice reply through the head
-        // unit. MessagingStyle + CATEGORY_MESSAGE are what make Android Auto
-        // treat this as a conversation; the existing RemoteInput Reply action
-        // carries the spoken reply back through NotificationReplyReceiver.
+        // Android Auto: messaging style so the reply chain surfaces in the
+        // car and voice replies work through the head unit.
         val conversationTitle = if (sessionId.isNotEmpty()) sessionTitleFromNotify(title, sessionId) else ""
         val senderName = if (host.isNotEmpty()) "Hermes ($host)" else "Hermes"
         val messagingStyle = NotificationCompat.MessagingStyle("Hermes Assistant")
@@ -1128,394 +650,102 @@ class MainActivity : AppCompatActivity() {
         if (urgent) {
             builder.setDefaults(NotificationCompat.DEFAULT_SOUND or NotificationCompat.DEFAULT_VIBRATE)
         }
-        // CRITICAL: use the sanitized notifId (100+ range). The raw
-        // sessionId.hashCode() is negative for many ids and Samsung
-        // drops — and on some builds throws on — negative notification
-        // IDs. This was the cause of both missing notifications and
-        // the "WS msg error" status.
         notificationManager.notify(notifId, builder.build())
     }
 
     // ------------------------------------------------------------------
-    // Audio playback — unified FIFO queue (Bluetooth-gated autoplay)
-    //
-    // Both audio sources (server response MP3 via MediaPlayer, and notify
-    // alerts via TextToSpeech) feed the same queue. Items play strictly
-    // one at a time: the next starts only after the current one finishes,
-    // so a "Hermes finished" alert arriving mid-response is queued, never
-    // spoken over the top of the audio already playing.
+    // Session chips + history
     // ------------------------------------------------------------------
 
-    private data class PlaybackItem(val audioFile: File?, val spokenText: String?)
-
-    private val playbackQueue = ArrayDeque<PlaybackItem>()
-    private var isSpeaking = false
-    // The last response text that was played as server audio. A notify
-    // alert with the SAME text (the "Hermes finished" hook event for the
-    // same response) would just re-read it — skip the duplicate TTS to
-    // avoid the echo/chorus effect.
-    @Volatile
-    private var lastSpokenResponseText: String? = null
-    // Guards onPlaybackItemDone against double-firing (some TTS engines
-    // fire both onError and onDone for one utterance; a stale callback
-    // must not skip the next queued item).
-    private var playbackItemInFlight = false
-
-    // Watchdog: if an item doesn't finish within this long (TTS onDone
-    // not fired, MediaPlayer error, etc.), force-advance so the queue can
-    // never jam permanently with isSpeaking=true.
-    private val playbackWatchdog = android.os.Handler(android.os.Looper.getMainLooper())
-    private var playbackWatchdogRunnable: Runnable? = null
-    private val PLAYBACK_WATCHDOG_MS = 20000L
-
-    private fun armPlaybackWatchdog() {
-        playbackWatchdogRunnable?.let { playbackWatchdog.removeCallbacks(it) }
-        val r = Runnable {
-            // Timed out — assume the item is stuck and move on
-            runOnUiThread { onPlaybackItemDone() }
+    private fun handleTargetSessionIntent(intent: Intent?) {
+        val sessionId = intent?.getStringExtra("target_session_id").orEmpty()
+        if (sessionId.isEmpty()) return
+        val title = intent?.getStringExtra("target_session_title").orEmpty()
+        sessionStore.upsert(KnownSession(id = sessionId, title = sessionTitleFromNotify(title, sessionId)))
+        replySessionId = sessionId
+        replySessionTitle = title
+        updateReplyBadge()
+        renderSessionChips()
+        val msg = intent?.getStringExtra("target_message").orEmpty()
+        if (msg.isNotEmpty()) {
+            chatHistory.append(ChatMessage("notify", "$title — $msg"))
+            renderHistory()
         }
-        playbackWatchdogRunnable = r
-        playbackWatchdog.postDelayed(r, PLAYBACK_WATCHDOG_MS)
     }
 
-    private fun disarmPlaybackWatchdog() {
-        playbackWatchdogRunnable?.let { playbackWatchdog.removeCallbacks(it) }
-        playbackWatchdogRunnable = null
+    private fun sessionTitleFromNotify(title: String, sessionId: String): String {
+        // "Hermes finished · <session title>" -> "<session title>"
+        val idx = title.indexOf("·")
+        return if (idx > 0) title.substring(idx + 1).trim() else sessionId.takeLast(10)
     }
 
-    private fun enqueuePlayback(item: PlaybackItem) {
-        playbackQueue.addLast(item)
-        if (!isSpeaking) startNextPlayback()
+    private val sessionPalette = intArrayOf(
+        0xFF60A5FA.toInt(), // blue
+        0xFF34D399.toInt(), // green
+        0xFFFBBF24.toInt(), // amber
+        0xFFF472B6.toInt(), // pink
+        0xFFA78BFA.toInt(), // violet
+        0xFFF87171.toInt(), // red
+        0xFF2DD4BF.toInt(), // teal
+        0xFFFB923C.toInt(), // orange
+        0xFFA3E635.toInt(), // lime
+        0xFF38BDF8.toInt(), // sky
+    )
+
+    private fun sessionColor(sessionId: String): Int {
+        if (sessionId.isEmpty()) return sessionPalette[0]
+        return sessionPalette[Math.floorMod(sessionId.hashCode(), sessionPalette.size)]
     }
 
-    private fun startNextPlayback() {
-        val item = playbackQueue.removeFirstOrNull()
-        if (item == null) {
-            isSpeaking = false
-            disarmPlaybackWatchdog()
-            // Feature 1: after the response finishes playing, automatically listen again
-            scheduleAutoListen()
+    private fun renderSessionChips() {
+        sessionChipsRow.removeAllViews()
+        if (sessionStore.sessions.isEmpty()) {
+            sessionChipsRow.visibility = View.GONE
             return
         }
-        isSpeaking = true
-        setStatus("Speaking...", StatusRingView.State.SPEAKING)
-        playbackItemInFlight = true
-
-        val file = item.audioFile
-        val text = item.spokenText
-        when {
-            file != null -> {
-                // Server-generated response audio. MediaPlayer has reliable
-                // onCompletion/onError callbacks, so no watchdog needed here
-                // (a long response may legitimately play for 30-60s).
-                try {
-                    mediaPlayer?.release()
-                    mediaPlayer = MediaPlayer().apply {
-                        setDataSource(file.absolutePath)
-                        setOnCompletionListener { runOnUiThread { onPlaybackItemDone() } }
-                        setOnErrorListener { _, _, _ -> runOnUiThread { onPlaybackItemDone() }; true }
-                        prepare()
-                        start()
-                    }
-                } catch (e: Exception) {
-                    // Bad/empty file — skip it, keep the queue moving
-                    runOnUiThread { onPlaybackItemDone() }
-                }
-            }
-            text != null -> {
-                // Notify alert via TTS; onDone() fires the next item. If TTS
-                // isn't ready or speak fails, don't block the queue. The
-                // watchdog guards against onDone never firing (a known
-                // Samsung TTS quirk) which would otherwise jam the queue.
-                if (tts == null) {
-                    onPlaybackItemDone()
-                } else {
-                    armPlaybackWatchdog()
-                    val result = try {
-                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "notify") ?: TextToSpeech.ERROR
-                    } catch (e: Exception) {
-                        TextToSpeech.ERROR
-                    }
-                    if (result == TextToSpeech.ERROR) {
-                        onPlaybackItemDone()
-                    }
-                }
-            }
-            else -> onPlaybackItemDone()
-        }
-    }
-
-    private fun onPlaybackItemDone() {
-        if (!playbackItemInFlight) return // stale callback — ignore
-        playbackItemInFlight = false
-        disarmPlaybackWatchdog()
-        mediaPlayer?.release()
-        mediaPlayer = null
-        startNextPlayback()
-    }
-
-    private fun playAudioStream() {
-        audioOutputStream?.close()
-        audioOutputStream = null
-
-        audioTempFile?.let { file ->
-            // Only auto-play when a Bluetooth audio device is connected.
-            if (!isBluetoothConnected()) {
-                runOnUiThread {
-                    setStatus("Response ready — connect Bluetooth to hear it, or tap to play", StatusRingView.State.CONNECTED)
-                }
-                return
-            }
-            runOnUiThread {
-                enqueuePlayback(PlaybackItem(audioFile = file, spokenText = null))
-            }
-        }
-    }
-
-    private fun playPendingAudio() {
-        audioTempFile?.let {
-            enqueuePlayback(PlaybackItem(audioFile = it, spokenText = null))
-        }
-    }
-
-    private fun scheduleAutoListen() {
-        if (autoListenScheduled) return
-        autoListenScheduled = true
-        statusText.postDelayed({
-            autoListenScheduled = false
-            // If the user tapped something else in the meantime, don't steal the mic
-            if (isSpeaking || flushingQueue) return@postDelayed
-            // Offline: return to wake-word mode rather than auto-dictating
-            if (isConnected) startListening() else startWakeWord()
-        }, 700)
-    }
-
-    // ------------------------------------------------------------------
-    // Bluetooth detection
-    // ------------------------------------------------------------------
-
-    private fun isBluetoothConnected(): Boolean {
-        // Check A2DP output devices (no permission needed for output device list)
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        for (device in audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-            if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP) {
-                return true
-            }
-        }
-        // Fallback: adapter state
-        return try {
-            val adapter = BluetoothAdapter.getDefaultAdapter()
-            adapter != null && adapter.isEnabled &&
-                adapter.getProfileConnectionState(BluetoothProfile.A2DP) == BluetoothProfile.STATE_CONNECTED
-        } catch (e: SecurityException) {
-            false
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Speech recognition (online path)
-    // ------------------------------------------------------------------
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent) // keep getIntent() in sync for singleTask relaunch
-        // Auto-start listening if invoked while the app is already open in the background
-        if (isVoiceInvocation(intent.action)) {
-            if (isConnected) startListening() else startOfflineDictation()
-        }
-        // Auto-update: the "Update" notification action lands here too
-        // (the app may already be running when the user taps it).
-        if (isUpdateAction(intent.action)) {
-            handleUpdateAction()
-        }
-        // Notification tap: select the session chip for that notification
-        handleTargetSessionIntent(intent)
-    }
-
-    private fun startListening() {
-        // Free the mic: stop the service's wake word before Google STT.
-        stopWakeWordForStt()
-        expandPanel()
-        ChimePlayer.playStart(this)
-        sttListening = true
-        speakButton.text = "TAP TO CANCEL"
-        // The AudioRecord release takes a moment to propagate through the
-        // audio HAL; starting STT immediately can fail with ERROR_AUDIO.
-        // Small settle delay is the standard fix for this handoff.
-        statusText.postDelayed({
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-                // Wait longer before finalizing: a pause mid-thought shouldn't
-                // send the text immediately. These are hints the Google recognizer
-                // generally honors (Samsung included).
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-                putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 4000L)
-            }
-            speechRecognizer.startListening(intent)
-        }, 300)
-        setStatus("Listening...", StatusRingView.State.LISTENING)
-    }
-
-    /** Cancel an in-progress Google STT session (button tap = cancel). */
-    private fun cancelStt() {
-        if (!sttListening) return
-        sttListening = false
-        try {
-            speechRecognizer.cancel()
-            speechRecognizer.stopListening()
-        } catch (e: Exception) {
-            // Best-effort
-        }
-        ChimePlayer.playStop(this)
-        speakButton.text = "LISTENING FOR WAKE WORD"
-        setStatus("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
-        startWakeWord()
-    }
-
-    private fun setupSpeechRecognizer() {
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        speechRecognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                setStatus("Thinking...", StatusRingView.State.THINKING)
-                ChimePlayer.playStop(this@MainActivity)
-            }
-            override fun onError(error: Int) {
-                sttListening = false
-                ChimePlayer.playStop(this@MainActivity)
-                // Google STT may fail when offline — fall back to Vosk dictation
-                if (!isConnected) {
-                    startOfflineDictation()
-                } else {
-                    setStatus("Error listening. Try again.", StatusRingView.State.IDLE)
-                    startWakeWord()
-                }
-            }
-
-            override fun onResults(results: Bundle?) {
-                sttListening = false
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                if (!matches.isNullOrEmpty()) {
-                    sendUserMessage(matches[0])
-                } else {
-                    // Nothing recognized — back to wake word
-                    startWakeWord()
-                }
-            }
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-    }
-
-    /**
-     * Shared send path for both voice and typed text.
-     * Routes to the targeted reply session when armed, otherwise the
-     * daily android session; queues persistently when offline.
-     */
-    private fun sendUserMessage(rawText: String) {
-        val userText = rawText.trim()
-        if (userText.isEmpty()) return
-
-        // The message belongs to whichever session is currently targeted
-        // (replySessionId may be cleared after a successful send, so
-        // capture it first). Used to tag both the user bubble and the
-        // hermes reply bubble with the same session.
-        activeSessionId = replySessionId
-        activeSessionTitle = replySessionTitle
-
-        chatHistory.append(
-            ChatMessage("user", userText, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
-        )
-        renderHistory()
-        setStatus("You: $userText", StatusRingView.State.THINKING)
-
-        // If a targeted reply is armed (a notify arrived with a
-        // session_id), wrap the message so the server routes it to that
-        // specific Hermes session.
-        val payload = if (replySessionId.isNotEmpty()) {
-            "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
-        } else {
-            userText
-        }
-
-        if (isConnected && webSocket?.send(payload) == true) {
-            // Sent successfully — clear the targeted reply
-            if (replySessionId.isNotEmpty()) {
-                replySessionId = ""
-                replySessionTitle = ""
-                runOnUiThread {
+        sessionChipsRow.visibility = View.VISIBLE
+        sessionStore.sessions.forEach { session ->
+            val selected = session.id == replySessionId
+            val color = sessionColor(session.id)
+            val chip = TextView(this).apply {
+                text = session.title.ifEmpty { "…${session.id.takeLast(10)}" }
+                textSize = 12f
+                setTextColor(if (selected) 0xFF0D0F14.toInt() else 0xFFE5E7EB.toInt())
+                setPadding(dp(14), dp(8), dp(14), dp(8))
+                background = chipBackground(selected, color)
+                isClickable = true
+                setOnClickListener {
+                    replySessionId = if (selected) "" else session.id
+                    replySessionTitle = if (selected) "" else session.title
                     updateReplyBadge()
                     renderSessionChips()
                 }
             }
-        } else {
-            // Offline (or dropped mid-send): queue it persistently
-            isConnected = false
-            setStatus("Offline — message queued", StatusRingView.State.IDLE)
-            chatHistory.enqueue(userText)
-            renderHistory()
-            updateQueueBadge()
-            connectWebSocket()
+            val lp = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(8) }
+            sessionChipsRow.addView(chip, lp)
+        }
+        sessionChipsScroll.post {
+            // Scroll the selected chip into view so the user sees what's armed
+            val selIndex = sessionStore.sessions.indexOfFirst { it.id == replySessionId }
+            if (selIndex >= 0 && selIndex < sessionChipsRow.childCount) {
+                val child = sessionChipsRow.getChildAt(selIndex)
+                sessionChipsScroll.smoothScrollTo(child.left, 0)
+            }
         }
     }
 
-    private fun sendToHermes(text: String) {
-        val json = """{"message": "$text"}"""
-        val body = json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-
-        val request = Request.Builder()
-            .url("${ServerConfig.httpBase(this)}/chat")
-            .post(body)
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                runOnUiThread { setStatus("Connection Error: ${e.message}", StatusRingView.State.IDLE) }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) {
-                    runOnUiThread { setStatus("Error from server: ${response.code}", StatusRingView.State.IDLE) }
-                    return
-                }
-
-                val responseText = response.header("X-Response-Text", "Audio received") ?: "Audio received"
-                runOnUiThread {
-                    setStatus("Hermes: $responseText", StatusRingView.State.CONNECTED)
-                    chatHistory.append(
-                        ChatMessage(
-                            "hermes",
-                            responseText,
-                            sessionId = activeSessionId,
-                            sessionTitle = activeSessionTitle,
-                        )
-                    )
-                    renderHistory()
-                }
-
-                val tempFile = File(cacheDir, "hermes_reply.mp3")
-                val sink = FileOutputStream(tempFile)
-                sink.use { it.write(response.body!!.bytes()) }
-
-                runOnUiThread {
-                    if (isBluetoothConnected()) {
-                        enqueuePlayback(PlaybackItem(audioFile = tempFile, spokenText = null))
-                    } else {
-                        audioTempFile = tempFile
-                        setStatus("Response ready — connect Bluetooth to hear it, or tap to play", StatusRingView.State.CONNECTED)
-                    }
-                }
-            }
-        })
+    private fun chipBackground(selected: Boolean, color: Int) = GradientDrawable().apply {
+        cornerRadius = dp(18).toFloat()
+        if (selected) {
+            setColor(color)
+        } else {
+            setColor(0xFF111827.toInt())
+            setStroke(dp(1), color)
+        }
     }
-
-    // ------------------------------------------------------------------
-    // Chat history rendering
-    // ------------------------------------------------------------------
 
     private fun renderHistory() {
         historyList.removeAllViews()
@@ -1557,7 +787,6 @@ class MainActivity : AppCompatActivity() {
         val bg = GradientDrawable().apply {
             cornerRadius = dp(14).toFloat()
         }
-        // More breathing room between bubbles.
         val lp = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
@@ -1565,7 +794,6 @@ class MainActivity : AppCompatActivity() {
 
         when (m.role) {
             "user" -> {
-                // Darker fill so the session-colored border actually stands out.
                 bg.setColor(if (m.queued) 0xFF3B2F1A.toInt() else 0xFF16233D.toInt())
                 lp.gravity = android.view.Gravity.END
             }
@@ -1580,26 +808,15 @@ class MainActivity : AppCompatActivity() {
                 tv.textSize = 13f
             }
         }
-        // Session color border on EVERY bubble (user, hermes, and notify —
-        // notify rows carry session_id too), so the whole history is
-        // color-coded consistently with the chips. 2dp for chat rows, 1dp
-        // for the slimmer notify rows.
         bg.setStroke(if (m.role == "notify") dp(1) else dp(2), sessionAccent)
         tv.background = bg
         historyList.addView(tv, lp)
     }
 
-    /**
-     * Tapping a message targets the session it belongs to: the matching
-     * chip gets selected and the reply badge arms. Messages with no
-     * session (the phone's own daily chat) clear the target back to
-     * default.
-     */
     private fun selectSessionFromMessage(m: ChatMessage) {
         val targetId = m.sessionId
         if (targetId.isNotEmpty()) {
             val targetTitle = m.sessionTitle.ifEmpty { "…${targetId.takeLast(10)}" }
-            // Make sure the chip exists (may have arrived via a different path)
             sessionStore.upsert(KnownSession(id = targetId, title = targetTitle))
             replySessionId = targetId
             replySessionTitle = targetTitle
@@ -1613,34 +830,247 @@ class MainActivity : AppCompatActivity() {
         renderSessionChips()
     }
 
+    private fun updateReplyBadge() {
+        subText.text = if (replySessionId.isNotEmpty()) {
+            "Reply goes to: $replySessionTitle — tap to speak"
+        } else {
+            updateQueueBadgeText()
+        }
+    }
+
     private fun updateQueueBadge() {
+        subText.text = updateQueueBadgeText()
+    }
+
+    private fun updateQueueBadgeText(): String {
         val n = chatHistory.queue.size
-        subText.text = if (n > 0) {
+        return if (n > 0) {
             "$n message${if (n == 1) "" else "s"} queued — will send when connected"
         } else {
             "Tap to speak · wake word: \"Hey Hermes\""
         }
     }
 
+    // ------------------------------------------------------------------
+    // Panel collapse/expand + nav bar inset
+    // ------------------------------------------------------------------
+
+    private fun wirePanelToggle() {
+        // Down/up chevron band: collapse the listening panel so the chat
+        // takes the whole screen; tap again to expand. Whole band tappable.
+        panelCollapseBar.setOnClickListener { togglePanelCollapsed() }
+        panelToggleButton.setOnClickListener { togglePanelCollapsed() }
+        panelCollapseBar.post { updateNavBarInset() }
+    }
+
+    private fun togglePanelCollapsed() {
+        panelCollapsed = !panelCollapsed
+        applyPanelCollapsed()
+    }
+
+    private fun applyPanelCollapsed() {
+        assistantPanel.visibility = if (panelCollapsed) View.GONE else View.VISIBLE
+        panelToggleButton.setImageResource(
+            if (panelCollapsed) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down
+        )
+        panelToggleLabel.text = if (panelCollapsed) "Expand panel" else "Collapse panel"
+        // When collapsed, the chat section gets ~5% bottom padding so the
+        // expand band floats above the bottom of the chat content.
+        val extra = if (panelCollapsed) {
+            (resources.displayMetrics.heightPixels * 0.05f).toInt()
+        } else 0
+        chatSection.setPadding(0, 0, 0, extra)
+        // Re-read the nav bar inset (may have changed with the panel state).
+        updateNavBarInset()
+    }
+
+    private fun updateNavBarInset() {
+        val inset = ViewCompatRootInsets()
+        navBarInsetBottom = inset
+        // Only pad above the nav bar when collapsed (the band is at the
+        // bottom edge then); expanded, the panel already fills below.
+        panelCollapseBar.setPadding(0, 0, 0, if (panelCollapsed) navBarInsetBottom else 0)
+    }
+
+    private fun ViewCompatRootInsets(): Int {
+        return try {
+            val insets = androidx.core.view.ViewCompat.getRootWindowInsets(panelCollapseBar)
+            insets?.getInsets(androidx.core.view.WindowInsetsCompat.Type.navigationBars())?.bottom ?: 0
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) updateNavBarInset()
+    }
+
+    private fun expandPanel() {
+        if (panelCollapsed) {
+            panelCollapsed = false
+            applyPanelCollapsed()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Text input + settings
+    // ------------------------------------------------------------------
+
+    private fun wireTextInput() {
+        speakButton.setOnClickListener {
+            when {
+                voice.isActive -> voice.cancel()
+                audio.playbackInFlight() -> Unit // ignore taps mid-playback
+                !isConnected -> startOfflineDictation()
+                else -> beginListening()
+            }
+        }
+
+        val iconSize = (resources.displayMetrics.widthPixels * 0.12f).toInt()
+        typeToggleButton.layoutParams = typeToggleButton.layoutParams.apply { width = iconSize; height = iconSize }
+        typeToggleButton.setOnClickListener {
+            val visible = textInputRow.visibility == View.VISIBLE
+            textInputRow.visibility = if (visible) View.GONE else View.VISIBLE
+            if (visible) {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.hideSoftInputFromWindow(textInput.windowToken, 0)
+            } else {
+                textInput.requestFocus()
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
+                imm.showSoftInput(textInput, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }
+        }
+
+        sendButton.setOnClickListener { sendTypedText() }
+        textInput.setOnEditorActionListener { _, _, _ ->
+            sendTypedText()
+            true
+        }
+    }
+
+    private fun sendTypedText() {
+        val text = textInput.text.toString().trim()
+        if (text.isEmpty()) return
+        textInput.setText("")
+        sendUserMessage(text)
+    }
+
+    private fun wireSessionChips() {
+        sessionChipsScroll.setOnClickListener {
+            // Tapping the chips area expands the panel if collapsed
+            expandPanel()
+        }
+    }
+
+    private fun wireSettings() {
+        settingsButton.setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Permissions / notifications / updates
+    // ------------------------------------------------------------------
+
+    private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = android.app.NotificationChannel(
+                NOTIFICATION_CHANNEL,
+                "Hermes Agent Events",
+                android.app.NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when Hermes finishes a session or needs your input"
+            }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            nm.createNotificationChannel(channel)
+        }
+    }
+
+    private fun startHermesForegroundService() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(Intent(this, HermesForegroundService::class.java))
+            } else {
+                startService(Intent(this, HermesForegroundService::class.java))
+            }
+        } catch (e: Exception) {
+            // BackgroundServiceStartNotAllowedException — start next launch.
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS)
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                HermesForegroundService.notifyMicPermissionGranted()
+            }
+        }
+    }
+
+    private fun isVoiceInvocation(action: String?): Boolean {
+        return action == Intent.ACTION_ASSIST ||
+            action == Intent.ACTION_VOICE_COMMAND ||
+            action == "com.example.hermesassistant.START_LISTENING"
+    }
+
+    private fun isUpdateAction(action: String?): Boolean {
+        return action == UpdateChecker.ACTION_UPDATE
+    }
+
+    private fun handleUpdateAction() {
+        val apkUrl = intent.getStringExtra("update_apk_url").orEmpty()
+        if (apkUrl.isEmpty()) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            return
+        }
+        if (!UpdateChecker.canRequestInstalls(this)) {
+            setStatus("Allow installs from this app, then retry", StatusRingView.State.CONNECTED)
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            }
+            return
+        }
+        setStatus("Downloading update...", StatusRingView.State.THINKING)
+        Thread {
+            val result = UpdateChecker.installRelease(this, UpdateChecker.ReleaseInfo(
+                versionName = intent.getStringExtra("update_version").orEmpty(),
+                apkUrl = apkUrl,
+            ))
+            runOnUiThread { setStatus(result, StatusRingView.State.CONNECTED) }
+        }.start()
+    }
+
+    private fun scheduleAutoListen() {
+        if (autoListenScheduled) return
+        autoListenScheduled = true
+        statusText.postDelayed({
+            autoListenScheduled = false
+            if (voice.isActive || audio.playbackInFlight()) return@postDelayed
+            // Offline: return to wake-word mode rather than auto-dictating
+            if (isConnected) beginListening() else startWakeWord()
+        }, 700)
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     private fun setStatus(text: String, state: StatusRingView.State) {
-        // Status line is single-line (maxLines=1 + ellipsize). Collapse
-        // newlines so multi-line payloads (notify title+message, long
-        // Hermes replies) render as one clean line instead of pushing the
-        // speak button off the half-screen panel. Full text is in history.
         val oneLine = text.replace('\n', ' ').replace(Regex("\\s+"), " ").trim()
         statusText.text = oneLine
         statusRing.state = state
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        stopReconnectLoop()
-        speechRecognizer.destroy()
-        tts?.stop()
-        tts?.shutdown()
-        mediaPlayer?.release()
-        webSocket?.cancel()
     }
 }

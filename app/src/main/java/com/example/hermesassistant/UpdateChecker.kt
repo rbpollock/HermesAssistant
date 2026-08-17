@@ -19,6 +19,7 @@ import okhttp3.Request
 object UpdateChecker {
 
     const val REPO = "rbpollock/HermesAssistant"
+    const val ACTION_UPDATE = "com.example.hermesassistant.ACTION_UPDATE"
     // Atom feed, NOT the REST API: GitHub's api.github.com allows only 60
     // unauthenticated requests/hour per IP, and phones behind carrier NAT
     // share an IP with many users — the budget is routinely exhausted so
@@ -34,8 +35,8 @@ object UpdateChecker {
     data class ReleaseInfo(
         val versionName: String,   // "1.6.25" (no "v" prefix)
         val apkUrl: String?,       // constructed download URL for the .apk
-        val releaseUrl: String,    // html_url of the release
-        val tagName: String,       // raw tag, e.g. "v1.6.25"
+        val releaseUrl: String = "https://github.com/$REPO/releases/latest",
+        val tagName: String = "",
     )
 
     private val client = OkHttpClient.Builder()
@@ -268,7 +269,7 @@ object UpdateChecker {
             )
             val updateIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                action = "com.example.hermesassistant.ACTION_UPDATE"
+                action = ACTION_UPDATE
                 putExtra("update_apk_url", release.apkUrl)
                 putExtra("update_version", release.versionName)
             }
