@@ -80,6 +80,11 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                     val json = JSONObject(respBody)
                     if (response.isSuccessful && json.optBoolean("ok", false)) {
                         val reply = json.optString("reply", "")
+                        // Confirmed injection into a live session: put the
+                        // green check on the user's bubble.
+                        if (json.optBoolean("injected_live", false)) {
+                            ChatHistoryStore(context).markInjected(sessionId)
+                        }
                         // Also record Hermes' answer in the shared history.
                         if (reply.isNotEmpty()) {
                             appendToHistory(context, "hermes", reply, sessionId, sessionTitle)

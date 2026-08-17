@@ -20,6 +20,7 @@ data class ChatMessage(
     val queued: Boolean = false,
     val sessionId: String = "",
     val sessionTitle: String = "",
+    val injected: Boolean = false,
 )
 
 /**
@@ -96,6 +97,22 @@ class ChatHistoryStore(context: Context) {
         saveJson(historyFile, messages)
     }
 
+    /**
+     * Mark the most recent user bubble for this session as delivered to a
+     * live session (relay returned injected_live=true). The check mark in
+     * the bubble is driven by the ChatMessage.injected flag.
+     */
+    fun markInjected(sessionId: String) {
+        var changed = false
+        messages = messages.mapIndexed { i, m ->
+            if (!changed && m.role == "user" && m.sessionId == sessionId && !m.injected) {
+                changed = true
+                m.copy(injected = true)
+            } else m
+        }
+        if (changed) saveJson(historyFile, messages)
+    }
+
     private fun loadJson(file: File): List<ChatMessage> {
         if (!file.exists()) return emptyList()
         return try {
@@ -109,6 +126,7 @@ class ChatHistoryStore(context: Context) {
                     queued = o.optBoolean("queued", false),
                     sessionId = o.optString("sessionId", ""),
                     sessionTitle = o.optString("sessionTitle", ""),
+                    injected = o.optBoolean("injected", false),
                 )
             }
         } catch (e: Exception) {
@@ -127,6 +145,7 @@ class ChatHistoryStore(context: Context) {
                     put("queued", m.queued)
                     put("sessionId", m.sessionId)
                     put("sessionTitle", m.sessionTitle)
+                    put("injected", m.injected)
                 })
             }
             file.writeText(arr.toString())

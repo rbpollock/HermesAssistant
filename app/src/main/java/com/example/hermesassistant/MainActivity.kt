@@ -507,6 +507,8 @@ class MainActivity : AppCompatActivity() {
     private fun startOfflineDictation() {
         dictationMode = true
         expandPanel()
+        ChimePlayer.init(this)
+        ChimePlayer.playStart()
         speakButton.text = "TAP TO CANCEL"
         setStatus("Listening (offline — will queue)", StatusRingView.State.LISTENING)
         HermesForegroundService.startDictation()
@@ -625,10 +627,15 @@ class MainActivity : AppCompatActivity() {
                         when (type) {
                             "text" -> {
                                 setStatus("Hermes: ${json.optString("message")}", StatusRingView.State.CONNECTED)
+                                // Remember the response text so the follow-up
+                                // "Hermes finished" notify doesn't re-read it
+                                // over the audio (chorus/echo fix).
+                                val msg = json.optString("message")
+                                if (msg.isNotEmpty()) lastSpokenResponseText = msg
                                 chatHistory.append(
                                     ChatMessage(
                                         "hermes",
-                                        json.optString("message"),
+                                        msg,
                                         sessionId = activeSessionId,
                                         sessionTitle = activeSessionTitle,
                                     )
@@ -744,8 +751,17 @@ class MainActivity : AppCompatActivity() {
         // few seconds (e.g. a reconnect flushed the same payload twice),
         // skip the system notification + TTS alert. History and status
         // still update, so nothing looks lost — the user just isn't
-        // spammed by the same "Hermes finished" twice.
+        // Short-window dedupe for identical notify events (reconnect replay).
         val isDuplicate = isDuplicateNotify(kind, title, message, sessionId)
+
+        // A "Delivered to live session" confirmation: mark the newest user
+        // bubble for that session with the green check, don't spam a
+        // notification for it.
+        if (json.optString("event") == "injected") {
+            chatHistory.markInjected(sessionId)
+            renderHistory()
+            return
+        }
 
         // Remember which session this came from so the next spoken message
         // can be routed back to it (answering a clarify prompt, etc.).
@@ -790,8 +806,14 @@ class MainActivity : AppCompatActivity() {
 
             // Speak the alert aloud ONLY when a Bluetooth device is connected,
             // and route it through the playback queue so it never talks over
-            // response audio that's already playing.
-            if (isBluetoothConnected()) {
+            // response audio that's already playing. Skip when the server
+            // flagged this as the same response the audio already spoke
+            // (already_spoken), or when the text matches the last response
+            // we played (fallback for older relays) — both caused the
+            // echo/chorus effect.
+            val serverSaysSpoken = json.optBoolean("already_spoken", false)
+            val isResponseEcho = message.isNotEmpty() && message == lastSpokenResponseText
+            if (isBluetoothConnected() && !serverSaysSpoken && !isResponseEcho) {
                 enqueuePlayback(PlaybackItem(audioFile = null, spokenText = "$title. $message"))
             }
         }
@@ -1125,6 +1147,12 @@ class MainActivity : AppCompatActivity() {
 
     private val playbackQueue = ArrayDeque<PlaybackItem>()
     private var isSpeaking = false
+    // The last response text that was played as server audio. A notify
+    // alert with the SAME text (the "Hermes finished" hook event for the
+    // same response) would just re-read it — skip the duplicate TTS to
+    // avoid the echo/chorus effect.
+    @Volatile
+    private var lastSpokenResponseText: String? = null
     // Guards onPlaybackItemDone against double-firing (some TTS engines
     // fire both onError and onDone for one utterance; a stale callback
     // must not skip the next queued item).
@@ -1305,6 +1333,8 @@ class MainActivity : AppCompatActivity() {
         // Free the mic: stop the service's wake word before Google STT.
         stopWakeWordForStt()
         expandPanel()
+        ChimePlayer.init(this)
+        ChimePlayer.playStart()
 
         // The AudioRecord release takes a moment to propagate through the
         // audio HAL; starting STT immediately can fail with ERROR_AUDIO.
@@ -1333,8 +1363,10 @@ class MainActivity : AppCompatActivity() {
             override fun onBufferReceived(buffer: ByteArray?) {}
             override fun onEndOfSpeech() {
                 setStatus("Thinking...", StatusRingView.State.THINKING)
+                ChimePlayer.playStop()
             }
             override fun onError(error: Int) {
+                ChimePlayer.playStop()
                 // Google STT may fail when offline — fall back to Vosk dictation
                 if (!isConnected) {
                     startOfflineDictation()
@@ -1474,7 +1506,22 @@ class MainActivity : AppCompatActivity() {
         val bubbleMaxWidth = (resources.displayMetrics.widthPixels * 0.8f).toInt()
         val sessionAccent = sessionColor(m.sessionId)
         val tv = TextView(this).apply {
-            text = m.text + if (m.queued) "\n\u23F3 queued (offline)" else ""
+            // Injected confirmation: a small GREEN check after the user's
+            // text signals the message was delivered into a live session.
+            val suffix = if (m.queued) "\n\u23F3 queued (offline)" else ""
+            val base = m.text + suffix
+            if (m.role == "user" && m.injected) {
+                val spannable = android.text.SpannableString(base + "  \u2714")
+                spannable.setSpan(
+                    android.text.style.ForegroundColorSpan(0xFF34D399.toInt()),
+                    base.length,
+                    spannable.length,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+                text = spannable
+            } else {
+                text = base
+            }
             textSize = 14f
             setTextColor(0xFFE5E7EB.toInt())
             setPadding(dp(14), dp(10), dp(14), dp(10))

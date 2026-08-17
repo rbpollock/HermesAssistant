@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import json
 import subprocess
+import time
 from typing import Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
@@ -22,6 +23,13 @@ connected_clients: Set[WebSocket] = set()
 # the phone on its next connection. Bounded to avoid unbounded growth.
 MAX_PENDING = 20
 pending_events: list = []
+
+# Sessions that just got a WS reply (session_id -> timestamp). When the
+# "Hermes finished" hook event arrives for the same session right after,
+# the phone already heard the response as streamed audio — flag the
+# notify so the app doesn't re-read it (echo/chorus fix).
+last_ws_reply: dict[str, float] = {}
+WS_REPLY_WINDOW_S = 90
 
 
 class HermesEvent(BaseModel):
@@ -206,6 +214,22 @@ async def chat_message(msg: ChatMessageIn):
 
     reply, injected_live = _chat_reply(message, effective_session)
     print(f"💬 HTTP chat -> session {effective_session}: {reply[:200]}")
+
+    # TEMPORARY: when a message is injected into a live session, push a
+    # notify to the phone so the user gets confirmation without watching
+    # the screen (the TUI redraws and the injected line can be easy to
+    # miss). TODO: remove once the delivery UX settles.
+    if injected_live:
+        await send_to_phone({
+            "type": "notify",
+            "kind": "response",
+            "title": "Delivered to live session",
+            "message": f"Sent: {message[:80]}",
+            "session_id": effective_session,
+            "event": "injected",
+            "host": "",
+        })
+
     return {
         "ok": True,
         "session_id": effective_session,
@@ -245,6 +269,16 @@ async def hermes_event(event: HermesEvent):
         if session_title:
             title = f"Hermes finished · {session_title}"
 
+    # If this session just got a WS reply (its response was streamed as
+    # audio to the phone), the "Hermes finished" event is the same text —
+    # flag it so the app doesn't re-read it over the audio.
+    already_spoken = (
+        event.session_id in last_ws_reply
+        and time.time() - last_ws_reply.get(event.session_id, 0) < WS_REPLY_WINDOW_S
+    )
+    if already_spoken:
+        last_ws_reply.pop(event.session_id, None)  # one-shot flag
+
     payload = {
         "type": "notify",
         "kind": kind,
@@ -253,6 +287,7 @@ async def hermes_event(event: HermesEvent):
         "session_id": event.session_id,
         "event": event.hook_event_name,
         "host": (event.extra or {}).get("host", ""),
+        "already_spoken": already_spoken,
     }
 
     relayed = await send_to_phone(payload)
@@ -336,7 +371,22 @@ async def websocket_endpoint(websocket: WebSocket):
                 # completes. Don't run a second one-shot reply.
                 await send_to_phone({"type": "status", "message": "Sent to live session"})
                 await send_to_phone({"type": "text", "message": reply_text})
+                # TEMPORARY confirmation notify (see /chat/message).
+                await send_to_phone({
+                    "type": "notify",
+                    "kind": "response",
+                    "title": "Delivered to live session",
+                    "message": f"Sent: {message[:80]}",
+                    "session_id": effective_session,
+                    "event": "injected",
+                    "host": "",
+                })
                 continue
+
+            # The phone just heard this response as streamed audio — any
+            # "Hermes finished" hook event for the same session shortly
+            # after is the same text; the app should not re-read it.
+            last_ws_reply[effective_session] = time.time()
 
             # Send the text to the phone. Broadcast to ALL connected phones
             # (dropping stale sockets) so a reply isn't lost if the app

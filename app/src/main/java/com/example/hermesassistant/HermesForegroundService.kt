@@ -17,6 +17,12 @@ import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
 
 /**
  * Keeps the app process alive AND runs the always-on Vosk wake word.
@@ -114,6 +120,7 @@ class HermesForegroundService : Service(), RecognitionListener {
     private var voskModel: Model? = null
     private var voskService: SpeechService? = null
     private var dictationMode = false
+    private var dictationFromWakeWord = false
     private var micPermissionGranted = false
 
     // "Over other apps" compact panel (bottom third). Shown when the
@@ -129,6 +136,7 @@ class HermesForegroundService : Service(), RecognitionListener {
         super.onCreate()
         setInstance(this)
         setAppContext(this)
+        ChimePlayer.init(this)
         micPermissionGranted = ContextCompat.checkSelfPermission(
             this, android.Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
@@ -208,8 +216,13 @@ class HermesForegroundService : Service(), RecognitionListener {
             voskService = SpeechService(recognizer, 16000.0f)
             // Long outer cap so a mid-thought pause doesn't cut the phrase.
             voskService?.startListening(this, DICTATION_TIMEOUT_MS)
-            updateNotification("Dictating (offline)")
-            updateOverlayStatus("Dictating (offline)", "Speak — your words will be queued")
+            if (dictationFromWakeWord) {
+                updateNotification("Listening...")
+                updateOverlayStatus("Listening...", "Say your message")
+            } else {
+                updateNotification("Dictating (offline)")
+                updateOverlayStatus("Dictating (offline)", "Speak — your words will be queued")
+            }
         } catch (e: Exception) {
             updateNotification("Vosk error: ${e.message?.take(60)}")
         }
@@ -262,19 +275,66 @@ class HermesForegroundService : Service(), RecognitionListener {
             // Offline transcription complete — hand the text to MainActivity
             val text = (hypothesis ?: "").trim()
             stopVoskService()
+            ChimePlayer.playStop()
             if (text.isNotEmpty()) {
+                // Broadcast so MainActivity can show it in history.
                 val i = Intent(ACTION_DICTATION_RESULT)
                     .setPackage(packageName)
                     .putExtra(EXTRA_DICTATION_TEXT, text)
                 sendBroadcast(i)
+
+                // Wake-word path: MainActivity may be paused/dead (the
+                // overlay is up over another app), so the broadcast can be
+                // lost. Send the phrase over HTTP ourselves — this is the
+                // hands-free channel that works from the background.
+                if (dictationFromWakeWord) {
+                    sendDictatedTextHttp(text)
+                }
             }
             // Back to wake word
             dictationMode = false
+            dictationFromWakeWord = false
             startWakeWordNow()
             return
         }
         if (isWakeWordMatch(hypothesis)) {
             wakeWordHeard()
+        }
+    }
+
+    /** POST a wake-word-dictated phrase to the relay (hands-free path). */
+    private fun sendDictatedTextHttp(text: String) {
+        try {
+            val client = OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .build()
+            val json = JSONObject()
+                .put("message", text)
+                .put("session_id", "")
+            val body = json.toString()
+                .toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+            val request = Request.Builder()
+                .url("${ServerConfig.httpBase(this)}/chat/message")
+                .post(body)
+                .build()
+            Thread {
+                try {
+                    client.newCall(request).execute().use { resp ->
+                        val bodyText = resp.body?.string().orEmpty()
+                        val injected = try {
+                            JSONObject(bodyText).optBoolean("injected_live", false)
+                        } catch (e: Exception) {
+                            false
+                        }
+                        updateNotification(if (injected) "Delivered to live session" else "Message sent")
+                    }
+                } catch (e: Exception) {
+                    updateNotification("Couldn't send — check server")
+                }
+            }.start()
+        } catch (e: Exception) {
+            updateNotification("Couldn't send — check server")
         }
     }
 
@@ -297,6 +357,8 @@ class HermesForegroundService : Service(), RecognitionListener {
         if (dictationMode) {
             stopVoskService()
             dictationMode = false
+            dictationFromWakeWord = false
+            ChimePlayer.playStop()
             startWakeWordNow()
         }
     }
@@ -304,6 +366,8 @@ class HermesForegroundService : Service(), RecognitionListener {
     override fun onError(exception: Exception?) {
         if (dictationMode) {
             dictationMode = false
+            dictationFromWakeWord = false
+            ChimePlayer.playStop()
             startWakeWordNow()
         }
     }
@@ -313,6 +377,8 @@ class HermesForegroundService : Service(), RecognitionListener {
         if (dictationMode) {
             stopVoskService()
             dictationMode = false
+            dictationFromWakeWord = false
+            ChimePlayer.playStop()
             startWakeWordNow()
         }
     }
@@ -320,12 +386,16 @@ class HermesForegroundService : Service(), RecognitionListener {
     private fun wakeWordHeard() {
         stopVoskService()
         updateNotification("Wake word heard")
-        // Prefer the compact overlay (bottom third over other apps) when we
-        // have draw-over permission; tapping it expands to the full app.
-        // Fall back to launching the activity directly when the permission
-        // hasn't been granted.
+        // Chime immediately, then begin listening right away — no tap
+        // needed. The overlay (if we have draw-over permission) becomes a
+        // "Listening..." status card; the mic is owned by Vosk dictation
+        // in this service, so the phrase gets transcribed here and sent
+        // to the relay over HTTP (works even with MainActivity dead).
+        ChimePlayer.playStart()
         if (Settings.canDrawOverlays(this)) {
             showOverlay()
+            dictationFromWakeWord = true
+            startDictation()
         } else {
             launchMainActivity()
         }
