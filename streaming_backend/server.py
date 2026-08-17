@@ -74,39 +74,38 @@ def _run_hermes(message: str, session: str) -> str:
 # ----------------------------------------------------------------------
 
 def _tmux_bin() -> str:
-    """Locate the locally-installed tmux (no root required)."""
-    candidates = [
+    """Locate a terminal multiplexer for live-session injection.
+
+    Prefers screen (system-installed on the server, no root needed);
+    falls back to the locally-extracted tmux. Both expose the same
+    pattern: name the session hermes_<session_id>, then inject text.
+    """
+    screen = "/usr/bin/screen"
+    if os.path.exists(screen):
+        return screen
+    tmux_candidates = [
         os.path.expanduser("~/bin/tmux-local/usr/bin/tmux"),
         "/usr/bin/tmux",
     ]
-    for c in candidates:
+    for c in tmux_candidates:
         if os.path.exists(c):
             return c
     return "tmux"
 
 
-def _live_session_id(session_id: str) -> bool:
-    """True if the session id is currently listed as live on this host.
-
-    The liveness registry (~/.hermes/runtime/active_sessions.json) only
-    covers gateway/web-server surfaces; plain `hermes chat` TUIs started
-    with hermes-tmux.sh don't register there. For those, the tmux
-    session name (hermes_<session_id>) is the marker, so check it too.
-    """
+def _session_exists(session_id: str) -> bool:
+    """True if a screen/tmux session named hermes_<session_id> exists."""
+    mux = _tmux_bin()
+    name = f"hermes_{session_id}"
     try:
-        state = os.path.expanduser("~/.hermes/runtime/active_sessions.json")
-        with open(state) as fh:
-            data = json.load(fh)
-        for e in data.get("entries") or []:
-            if e.get("session_id") == session_id:
-                return True
-    except Exception:
-        pass
-    # TUI sessions: a tmux session named hermes_<session_id> means live.
-    tmux = _tmux_bin()
-    try:
+        if os.path.basename(mux) == "screen":
+            # screen -list lists attached/detached sessions; grep the name.
+            out = subprocess.run(
+                [mux, "-list"], capture_output=True, text=True, timeout=5
+            ).stdout
+            return f"{name}" in out
         has = subprocess.run(
-            [tmux, "has-session", "-t", f"hermes_{session_id}"],
+            [mux, "has-session", "-t", name],
             capture_output=True, text=True, timeout=5,
         )
         return has.returncode == 0
@@ -115,32 +114,35 @@ def _live_session_id(session_id: str) -> bool:
 
 
 def _inject_via_tmux(session_id: str, message: str) -> str | None:
-    """Type a message into the live tmux session for the given session id.
+    """Type a message into the live screen/tmux session for the given id.
 
     Returns a short confirmation on success, or None when the session
-    isn't running under a tmux session we can reach.
+    isn't running under a multiplexer we can reach.
     """
-    tmux = _tmux_bin()
+    mux = _tmux_bin()
     session_name = f"hermes_{session_id}"
     try:
-        # Confirm the tmux session exists
-        has = subprocess.run(
-            [tmux, "has-session", "-t", session_name],
-            capture_output=True, text=True, timeout=10,
-        )
-        if has.returncode != 0:
+        if not _session_exists(session_id):
             return None
 
-        # Type the message + Enter. send-keys takes the text as a single
-        # arg, so no shell quoting worries; 'Enter' is a tmux key name.
-        subprocess.run(
-            [tmux, "send-keys", "-t", session_name, message, "Enter"],
-            capture_output=True, text=True, timeout=10,
-        )
-        print(f"⌨️ Injected into live tmux session {session_name}: {message[:120]}")
+        if os.path.basename(mux) == "screen":
+            # screen has no separate 'Enter' key name — send the literal
+            # carriage return. $'...' is not available in subprocess list
+            # form, so pass the string with the control char embedded.
+            subprocess.run(
+                [mux, "-S", session_name, "-X", "stuff", message + "\r"],
+                capture_output=True, text=True, timeout=10,
+            )
+        else:
+            # tmux: 'Enter' is a key name.
+            subprocess.run(
+                [mux, "send-keys", "-t", session_name, message, "Enter"],
+                capture_output=True, text=True, timeout=10,
+            )
+        print(f"⌨️ Injected into live {os.path.basename(mux)} session {session_name}: {message[:120]}")
         return "Delivered to live session"
     except Exception as e:
-        print(f"tmux inject failed: {e}")
+        print(f"inject failed: {e}")
         return None
 
 
@@ -149,11 +151,11 @@ def _chat_reply(message: str, session_id: str) -> tuple[str, bool]:
 
     Returns (reply_text, injected_live).
     """
-    if session_id and _live_session_id(session_id):
+    if session_id and _session_exists(session_id):
         injected = _inject_via_tmux(session_id, message)
         if injected is not None:
             return injected, True
-        # Live but not tmux-reachable — fall through to one-shot.
+        # Live but not multiplexer-reachable — fall through to one-shot.
     return _run_hermes(message, session_id or f"android_{datetime.datetime.now().strftime('%Y_%m_%d')}"), False
 
 
