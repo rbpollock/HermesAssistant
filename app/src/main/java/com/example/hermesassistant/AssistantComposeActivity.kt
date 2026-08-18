@@ -71,6 +71,7 @@ class AssistantComposeActivity : ComponentActivity() {
                     onSpeak = { viewModel.onSpeakButtonPressed() },
                     onSendText = { viewModel.sendUserMessage(it) },
                     onSelectSession = { viewModel.selectSession(it.id, it.title) },
+                    onSelectMessage = { viewModel.selectSessionFromMessage(it) },
                     onSettings = { showSettings = true },
                 )
             }

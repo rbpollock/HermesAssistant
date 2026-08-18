@@ -34,6 +34,9 @@ data class AssistantUiState(
     val voiceActive: Boolean = false,
     val speakButtonLabel: String = "LISTENING FOR WAKE WORD",
     val subTextLabel: String = "Tap to speak · wake word: \"Hey Hermes\"",
+    // F6: true when a response is parked (BT-only + no headset) and
+    // waiting for a tap to play — the speak button shows "TAP TO PLAY".
+    val hasParkedAudio: Boolean = false,
     // Live mic amplitude (0f..1f, smoothed) while listening — drives the
     // orb/waveform. 0 when not listening.
     val rmsLevel: Float = 0f,
@@ -82,6 +85,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private var flushingQueue = false
     private var autoListenScheduled = false
     private var lastTurnUserInitiated = false
+    // F5b: set after startWakeWord() so the "queued" confirmation is not
+    // immediately overwritten by the wake-word status line.
+    private var queuedConfirmation: String? = null
 
     // Notify dedupe window
     private val recentNotifyFingerprints = ArrayDeque<Pair<Long, String>>()
@@ -210,8 +216,19 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             override fun onStateChanged(state: VoiceInput.State) {
                 when (state) {
                     VoiceInput.State.STT,
-                    VoiceInput.State.DICTATION -> updateSpeakLabel("TAP TO CANCEL")
-                    VoiceInput.State.IDLE -> updateSpeakLabel("LISTENING FOR WAKE WORD")
+                    VoiceInput.State.DICTATION -> {
+                        updateSpeakLabel("TAP TO CANCEL")
+                        // F1: the mic is OPEN — the orb must show the
+                        // listening state (green + real amplitude), not
+                        // the idle grey. Previously nothing set
+                        // State.LISTENING, so the audio-reactive orb was
+                        // dead code.
+                        setStatusInternal("Listening...", StatusRingView.State.LISTENING)
+                    }
+                    VoiceInput.State.IDLE -> {
+                        updateSpeakLabel("LISTENING FOR WAKE WORD")
+                        setStatusInternal("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
+                    }
                 }
                 // Keep voiceActive in sync so the UI can expand the panel
                 // when listening begins (and re-arm wake word when idle).
@@ -221,8 +238,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             override fun onError(message: String) {
                 ChimePlayer.playStop(context)
                 if (_uiState.value.isConnected) {
-                   setStatusInternal("$message. Try again.", StatusRingView.State.IDLE)
+                    // F5a: arm the wake word FIRST, then show the error —
+                    // previously startWakeWord() overwrote the error
+                    // status before the user could read it.
                     startWakeWord()
+                    setStatusInternal("$message. Try again.", StatusRingView.State.IDLE)
                 } else {
                     // Offline: fall back to Vosk dictation
                     startOfflineDictation()
@@ -290,7 +310,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 .trim()
             if (clean.isNotEmpty() && !alreadySent) {
                 chatHistory.enqueue(clean)
-               setStatusInternal("Offline — queued: $clean", StatusRingView.State.CONNECTED)
+                // F5b: enqueue confirmation must survive — set it AFTER
+                // startWakeWord() below so it isn't clobbered.
+                queuedConfirmation = clean
             } else {
                 chatHistory.append(ChatMessage("user", clean))
             }
@@ -298,6 +320,11 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
         connectIfNeeded()
         startWakeWord()
+        queuedConfirmation?.let { clean ->
+            queuedConfirmation = null
+            // F7: offline condition — IDLE, not CONNECTED.
+            setStatusInternal("Offline — queued: $clean", StatusRingView.State.IDLE)
+        }
     }
 
     /** A wake-word HTTP reply landed (service appended history + spoke). */
@@ -336,9 +363,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         activeSessionId = replySessionId
         activeSessionTitle = replySessionTitle
 
-        chatHistory.append(
-            ChatMessage("user", userText, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
-        )
+        // F15: capture the bubble's timestamp so the offline branch can
+        // mark THIS bubble queued (not append a duplicate).
+        val userMsg = ChatMessage("user", userText, sessionId = activeSessionId, sessionTitle = activeSessionTitle)
+        chatHistory.append(userMsg)
        setStatusInternal("You: $userText", StatusRingView.State.THINKING)
         pushState()
 
@@ -357,7 +385,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         } else {
             _uiState.update { it.copy(isConnected = false) }
            setStatusInternal("Offline — message queued", StatusRingView.State.IDLE)
-            chatHistory.enqueue(userText)
+            // F15: mark the existing bubble queued — no duplicate append.
+            chatHistory.enqueueExisting(userMsg.ts)
             pushState()
             connectIfNeeded()
         }
@@ -384,11 +413,15 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     /** Notification tap: pre-select the session that notification came from. */
     fun handleTargetSessionIntent(sessionId: String, title: String, message: String) {
         if (sessionId.isEmpty()) return
-        sessionStore.upsert(KnownSession(id = sessionId, title = sessionTitleFromNotify(title, sessionId)))
+        // F4: strip the raw notification title ("Hermes finished · X")
+        // so chips, header and sub-line all show the session title "X"
+        // consistently with every other path.
+        val cleanTitle = sessionTitleFromNotify(title, sessionId)
+        sessionStore.upsert(KnownSession(id = sessionId, title = cleanTitle))
         replySessionId = sessionId
-        replySessionTitle = title
+        replySessionTitle = cleanTitle
         if (message.isNotEmpty()) {
-            chatHistory.append(ChatMessage("notify", "$title — $message"))
+            chatHistory.append(ChatMessage("notify", "$cleanTitle — $message"))
         }
         pushState()
     }
@@ -635,21 +668,28 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     /** Push history/sessions/badges into the state snapshot. */
     private fun pushState() {
         _uiState.update { s ->
+            // F9: reply badge and queue count can both be true — show both.
+            val n = chatHistory.queue.size
+            val queueBadge = if (n > 0) "$n message${if (n == 1) "" else "s"} queued — will send when connected" else ""
             val replyBadge = if (replySessionId.isNotEmpty()) {
                 "Reply goes to: $replySessionTitle — tap to speak"
-            } else {
-                val n = chatHistory.queue.size
-                if (n > 0) "$n message${if (n == 1) "" else "s"} queued — will send when connected"
-                else "Tap to speak · wake word: \"Hey Hermes\""
+            } else ""
+            val subTextLabel = when {
+                replyBadge.isNotEmpty() && queueBadge.isNotEmpty() ->
+                    "$replyBadge · $queueBadge"
+                replyBadge.isNotEmpty() -> replyBadge
+                queueBadge.isNotEmpty() -> queueBadge
+                else -> "Tap to speak · wake word: \"Hey Hermes\""
             }
             s.copy(
                 messages = chatHistory.messages,
                 sessions = sessionStore.sessions,
                 replySessionId = replySessionId,
                 replySessionTitle = replySessionTitle,
-                queueCount = chatHistory.queue.size,
+                queueCount = n,
                 voiceActive = voice.isActive,
-                subTextLabel = replyBadge,
+                hasParkedAudio = audio.pendingAudio() != null,
+                subTextLabel = subTextLabel,
             )
         }
     }

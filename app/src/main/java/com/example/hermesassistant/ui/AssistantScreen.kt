@@ -100,6 +100,7 @@ fun AssistantScreen(
     onSpeak: () -> Unit,
     onSendText: (String) -> Unit,
     onSelectSession: (KnownSession) -> Unit,
+    onSelectMessage: (ChatMessage) -> Unit,
     onSettings: () -> Unit,
 ) {
     HermesTheme {
@@ -176,6 +177,7 @@ fun AssistantScreen(
                     onSpeak = onSpeak,
                     onSendText = onSendText,
                     onSelectSession = onSelectSession,
+                    onSelectMessage = onSelectMessage,
                     onSettings = onSettings,
                     sheetValue = sheetState.currentValue,
                     onExpand = { scope.launch { sheetState.animateTo(SheetValue.FULL) } },
@@ -193,6 +195,7 @@ private fun SheetContent(
     onSpeak: () -> Unit,
     onSendText: (String) -> Unit,
     onSelectSession: (KnownSession) -> Unit,
+    onSelectMessage: (ChatMessage) -> Unit,
     onSettings: () -> Unit,
     sheetValue: SheetValue,
     onExpand: () -> Unit,
@@ -218,6 +221,47 @@ private fun SheetContent(
                 .background(Color(0xFF334155))
                 .align(Alignment.CenterHorizontally)
         )
+
+        if (sheetValue == SheetValue.PEEK) {
+            // F2: at PEEK the sheet is a slim strip — status + speak
+            // button only. The full content (chips, orb, input) would
+            // overflow a 16%-height sheet; the "at rest" state should be
+            // minimal, not a squashed version of everything.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = state.status,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                    )
+                    Text(
+                        text = state.subTextLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Button(
+                    onClick = onSpeak,
+                    modifier = Modifier.height(44.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text(text = speakLabel(state), fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                }
+            }
+            return@Column
+        }
 
         // Header row: expand/collapse chevron + session chips + settings
         Row(
@@ -252,6 +296,14 @@ private fun SheetContent(
 
         Spacer(Modifier.height(6.dp))
 
+        // F10: session header at HALF AND FULL — the glanceable "which
+        // session is targeted" confirmation must not wait for FULL.
+        SessionHeader(
+            sessionId = state.replySessionId,
+            sessionTitle = state.replySessionTitle,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
         // Listening orb + status (the invocation focus)
         Box(
             modifier = Modifier
@@ -274,6 +326,7 @@ private fun SheetContent(
                     text = state.subTextLabel,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp,
+                    maxLines = 2,
                 )
             }
         }
@@ -283,11 +336,6 @@ private fun SheetContent(
         // a jump-to-bottom button when the user has scrolled up.
         if (sheetValue == SheetValue.FULL) {
             val listState = rememberLazyListState()
-            SessionHeader(
-                sessionId = state.replySessionId,
-                sessionTitle = state.replySessionTitle,
-                modifier = Modifier.fillMaxWidth(),
-            )
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -295,7 +343,7 @@ private fun SheetContent(
             ) {
                 MessageList(
                     messages = state.messages,
-                    onSelectMessage = {},
+                    onSelectMessage = onSelectMessage,
                     listState = listState,
                     modifier = Modifier.fillMaxSize(),
                 )
@@ -332,7 +380,7 @@ private fun SheetContent(
             ),
             shape = RoundedCornerShape(16.dp),
         ) {
-            Text(text = state.speakButtonLabel, fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            Text(text = speakLabel(state), fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
         }
 
         Spacer(Modifier.height(10.dp))
@@ -376,6 +424,15 @@ private fun SheetContent(
 
         Spacer(Modifier.height(12.dp))
     }
+}
+
+/** F6: the speak button says what tapping it will DO. A parked response
+ *  (BT-only + no headset) must be discoverable from the button itself,
+ *  not just the status line. */
+@Composable
+private fun speakLabel(state: AssistantUiState): String = when {
+    state.hasParkedAudio -> "TAP TO PLAY"
+    else -> state.speakButtonLabel
 }
 
 @Composable

@@ -61,6 +61,21 @@ class ChatHistoryStore(context: Context) {
         saveJson(queueFile, queue)
     }
 
+    /**
+     * F15 fix: queue a message that is ALREADY in history (sendUserMessage
+     * appends the bubble optimistically, then the send fails). Enqueue the
+     * queue entry WITHOUT appending a second bubble; instead mark the
+     * matching history entry queued so the user sees ONE bubble with ⏳.
+     */
+    fun enqueueExisting(ts: Long) {
+        val existing = messages.lastOrNull { it.ts == ts && it.role == "user" }
+        val entry = existing?.copy(queued = true) ?: ChatMessage("user", "", queued = true)
+        queue = queue + entry
+        messages = messages.map { if (it.ts == ts && it.role == "user") it.copy(queued = true) else it }
+        saveJson(queueFile, queue)
+        saveJson(historyFile, messages)
+    }
+
     fun popQueued(): ChatMessage? {
         if (queue.isEmpty()) return null
         val head = queue.first()
