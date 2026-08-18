@@ -1,7 +1,9 @@
 package com.example.hermesassistant
 
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -27,6 +29,11 @@ class AssistantComposeActivity : ComponentActivity() {
 
     private val viewModel: AssistantViewModel by viewModels { AppViewModelProvider.factory }
     private var showSettings by mutableStateOf(false)
+
+    companion object {
+        private const val REQ_POST_NOTIFICATIONS = 2
+        private const val REQ_RECORD_AUDIO = 3
+    }
 
     private val serviceReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -74,6 +81,39 @@ class AssistantComposeActivity : ComponentActivity() {
             intent?.getStringExtra("target_session_title").orEmpty(),
             intent?.getStringExtra("target_message").orEmpty(),
         )
+
+        // Mic permission bootstrap: without RECORD_AUDIO the service's
+        // wake word cannot start. This mirrors MainActivity's onCreate —
+        // the Compose surface is now a primary entry point, so it must
+        // ask too (fresh installs that land here never saw the prompt).
+        if (androidx.core.content.ContextCompat.checkSelfPermission(
+                this, Manifest.permission.RECORD_AUDIO
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.RECORD_AUDIO), REQ_RECORD_AUDIO
+            )
+        } else {
+            HermesForegroundService.notifyMicPermissionGranted()
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            androidx.core.app.ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_RECORD_AUDIO) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                HermesForegroundService.notifyMicPermissionGranted()
+            }
+        }
     }
 
     override fun onResume() {

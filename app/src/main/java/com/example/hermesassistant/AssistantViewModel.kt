@@ -90,10 +90,33 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         createNotificationChannel()
+        // Boot the wake-word foreground service from the shared state
+        // layer. This was previously done by MainActivity.onCreate only —
+        // the Phase 3 Compose surface (the new wake-word target) never
+        // started it, so "Hey Hermes" silently died after an update /
+        // reboot when the service wasn't already running. Starting here
+        // covers ANY entry surface (Compose sheet, legacy activity,
+        // notification tap) with one call.
+        startForegroundServiceIfPossible()
         wireRelay()
         wireAudio()
         wireVoice()
         audio.initTts()
+    }
+
+    private fun startForegroundServiceIfPossible() {
+        try {
+            val i = android.content.Intent(context, HermesForegroundService::class.java)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                context.startForegroundService(i)
+            } else {
+                context.startService(i)
+            }
+        } catch (e: Exception) {
+            // BackgroundServiceStartNotAllowedException or similar — the
+            // service will be started next launch (activities also call
+            // notifyMicPermissionGranted(), which starts it too).
+        }
     }
 
     // ------------------------------------------------------------------

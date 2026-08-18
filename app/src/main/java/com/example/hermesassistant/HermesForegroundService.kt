@@ -630,7 +630,7 @@ class HermesForegroundService : Service(), RecognitionListener {
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(NotificationManager::class.java)
-        val openIntent = Intent(this, MainActivity::class.java).apply {
+        val openIntent = Intent(this, AssistantComposeActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
         }
         val pi = PendingIntent.getActivity(

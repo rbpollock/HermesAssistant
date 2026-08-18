@@ -33,7 +33,7 @@ import kotlinx.coroutines.launch
  */
 class MainActivity : ComponentActivity() {
 
-    private val viewModel: AssistantViewModel by viewModels()
+    private val viewModel: AssistantViewModel by viewModels { AppViewModelProvider.factory }
 
     // UI
     private lateinit var statusText: TextView
@@ -97,6 +97,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppViewModelProvider.init(application)
         setContentView(R.layout.activity_main)
 
         bindViews()
