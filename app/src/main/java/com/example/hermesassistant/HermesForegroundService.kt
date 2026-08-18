@@ -503,19 +503,13 @@ class HermesForegroundService : Service(), RecognitionListener {
     private fun wakeWordHeard() {
         stopVoskService()
         updateNotification("Wake word heard")
-        // Chime immediately, then begin listening right away — no tap
-        // needed. The overlay (if we have draw-over permission) becomes a
-        // "Listening..." status card; the mic is owned by Vosk dictation
-        // in this service, so the phrase gets transcribed here and sent
-        // to the relay over HTTP (works even with MainActivity dead).
+        // Chime immediately, then launch the Compose assistant surface —
+        // it auto-listens (Google STT online / Vosk offline) and the
+        // sheet rises to HALF with the orb. The legacy View overlay
+        // (overlay_panel.xml) is no longer used: it predates the Compose
+        // redesign and the new sheet is the invocation surface.
         ChimePlayer.playStart(this)
-        if (Settings.canDrawOverlays(this)) {
-            showOverlay()
-            dictationFromWakeWord = true
-            startDictation()
-        } else {
-            launchMainActivity()
-        }
+        launchMainActivity()
     }
 
     /** Launch the assistant surface into listening mode. Prefers the
