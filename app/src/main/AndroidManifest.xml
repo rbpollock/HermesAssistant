@@ -46,6 +46,15 @@
             android:name=".SettingsActivity"
             android:exported="false" />
 
+        <!-- Phase-3 Compose assistant surface (bottom-sheet invocation UI).
+             Shares the app-scoped AssistantViewModel with MainActivity. -->
+        <activity
+            android:name=".AssistantComposeActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:theme="@style/Theme.HermesAssistant"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Registers as a full Default Digital Assistant to replace Bixby -->
         <service
             android:name=".HermesVoiceInteractionService"

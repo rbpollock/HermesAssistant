@@ -28,6 +28,7 @@ class VoiceInput(private val context: Context) {
         fun onListening()                  // mic is now open
         fun onStoppedListening()           // mic released / phrase captured
         fun onThinking()                   // phrase sent, awaiting response
+        fun onRmsLevel(rmsdB: Float)       // live mic amplitude while listening
     }
 
     private var speechRecognizer: SpeechRecognizer? = null
@@ -138,7 +139,9 @@ class VoiceInput(private val context: Context) {
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {}
             override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onRmsChanged(rmsdB: Float) {
+                listener?.onRmsLevel(rmsdB)
+            }
             override fun onBufferReceived(buffer: ByteArray?) {}
 
             override fun onEndOfSpeech() {

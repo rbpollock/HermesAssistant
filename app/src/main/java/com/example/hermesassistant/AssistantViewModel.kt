@@ -34,6 +34,9 @@ data class AssistantUiState(
     val voiceActive: Boolean = false,
     val speakButtonLabel: String = "LISTENING FOR WAKE WORD",
     val subTextLabel: String = "Tap to speak · wake word: \"Hey Hermes\"",
+    // Live mic amplitude (0f..1f, smoothed) while listening — drives the
+    // orb/waveform. 0 when not listening.
+    val rmsLevel: Float = 0f,
 )
 
 /**
@@ -189,7 +192,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 }
                 // Keep voiceActive in sync so the UI can expand the panel
                 // when listening begins (and re-arm wake word when idle).
-                _uiState.update { it.copy(voiceActive = voice.isActive) }
+                _uiState.update { it.copy(voiceActive = voice.isActive, rmsLevel = 0f) }
             }
 
             override fun onError(message: String) {
@@ -212,7 +215,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             }
 
             override fun onThinking() {
-               setStatusInternal("Thinking...", StatusRingView.State.THINKING)
+                setStatusInternal("Thinking...", StatusRingView.State.THINKING)
+                _uiState.update { it.copy(rmsLevel = 0f) }
+            }
+
+            override fun onRmsLevel(rmsdB: Float) {
+                // Google STT reports dB (~-10 quiet .. -60 loud); map to
+                // 0..1 and smooth to avoid jitter in the orb.
+                val raw = ((rmsdB + 60f) / 50f).coerceIn(0f, 1f)
+                _uiState.update {
+                    it.copy(rmsLevel = (it.rmsLevel * 0.6f) + (raw * 0.4f))
+                }
             }
         })
     }
