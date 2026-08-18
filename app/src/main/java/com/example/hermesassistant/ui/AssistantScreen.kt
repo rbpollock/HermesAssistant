@@ -34,10 +34,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -230,10 +231,9 @@ private fun SheetContent(
         )
 
         if (sheetValue == SheetValue.PEEK) {
-            // F2: at PEEK the sheet is a slim strip — status + speak
-            // button only. The full content (chips, orb, input) would
-            // overflow a 16%-height sheet; the "at rest" state should be
-            // minimal, not a squashed version of everything.
+            // F2: at PEEK the sheet is a slim strip — status + mic icon
+            // only. The full content (chips, orb, input) would overflow a
+            // 16%-height sheet; the "at rest" state should be minimal.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -254,18 +254,8 @@ private fun SheetContent(
                         maxLines = 1,
                     )
                 }
-                Spacer(Modifier.width(12.dp))
-                Button(
-                    onClick = onSpeak,
-                    modifier = Modifier.height(44.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                        contentColor = MaterialTheme.colorScheme.onSurface,
-                    ),
-                    shape = RoundedCornerShape(16.dp),
-                ) {
-                    Text(text = speakLabel(state), fontSize = 12.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-                }
+                Spacer(Modifier.width(8.dp))
+                MicActionButton(state = state, onClick = onSpeak)
             }
             return@Column
         }
@@ -379,71 +369,84 @@ private fun SheetContent(
             }
         }
 
-        // Speak button + text input
-        Button(
-            onClick = onSpeak,
+        // Input row: text field + inline mic action + send. The mic icon
+        // replaces the old full-width speak button (same onSpeak action:
+        // cancel while listening / play parked / start listening).
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = MaterialTheme.colorScheme.onSurface,
-            ),
-            shape = RoundedCornerShape(16.dp),
+                .padding(top = 10.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(text = speakLabel(state), fontSize = 14.sp, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+            OutlinedTextField(
+                value = textInput,
+                onValueChange = { textInput = it },
+                modifier = Modifier.weight(1f),
+                placeholder = { Text("Type a message...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                    cursorColor = MaterialTheme.colorScheme.primary,
+                ),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(
+                    onSend = {
+                        onSendText(textInput.trim())
+                        textInput = ""
+                        keyboard?.hide()
+                    }
+                ),
+            )
+            Spacer(Modifier.width(8.dp))
+            MicActionButton(state = state, onClick = onSpeak)
+            IconButton(onClick = {
+                onSendText(textInput.trim())
+                textInput = ""
+                keyboard?.hide()
+            }) {
+                Icon(
+                    imageVector = Icons.Default.Send,
+                    contentDescription = "Send",
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
-
-        Spacer(Modifier.height(10.dp))
-
-        OutlinedTextField(
-            value = textInput,
-            onValueChange = { textInput = it },
-            modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Type a message...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-            singleLine = true,
-            shape = RoundedCornerShape(16.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                cursorColor = MaterialTheme.colorScheme.primary,
-            ),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-            keyboardActions = KeyboardActions(
-                onSend = {
-                    onSendText(textInput.trim())
-                    textInput = ""
-                    keyboard?.hide()
-                }
-            ),
-            trailingIcon = {
-                IconButton(onClick = {
-                    onSendText(textInput.trim())
-                    textInput = ""
-                    keyboard?.hide()
-                }) {
-                    Icon(
-                        imageVector = Icons.Default.Send,
-                        contentDescription = "Send",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            },
-        )
-
-        Spacer(Modifier.height(12.dp))
     }
 }
 
-/** F6: the speak button says what tapping it will DO. A parked response
- *  (BT-only + no headset) must be discoverable from the button itself,
- *  not just the status line. */
+/** The primary voice action as an icon button. The icon says what tapping
+ *  it will DO: mic = start listening, stop = cancel (listening), play =
+ *  a parked response is waiting (BT-only + no headset). */
 @Composable
-private fun speakLabel(state: AssistantUiState): String = when {
-    state.hasParkedAudio -> "TAP TO PLAY"
-    else -> state.speakButtonLabel
+private fun MicActionButton(state: AssistantUiState, onClick: () -> Unit) {
+    val (icon, desc, tint) = when {
+        state.voiceActive -> Triple(
+            Icons.Default.Stop,
+            "Stop listening",
+            MaterialTheme.colorScheme.error,
+        )
+        state.hasParkedAudio -> Triple(
+            Icons.Default.PlayArrow,
+            "Play response",
+            MaterialTheme.colorScheme.primary,
+        )
+        else -> Triple(
+            Icons.Default.Mic,
+            "Tap to speak",
+            MaterialTheme.colorScheme.primary,
+        )
+    }
+    IconButton(onClick = onClick) {
+        Icon(
+            imageVector = icon,
+            contentDescription = desc,
+            tint = tint,
+        )
+    }
 }
 
 @Composable
