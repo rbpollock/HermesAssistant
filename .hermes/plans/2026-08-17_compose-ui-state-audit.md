@@ -6,6 +6,14 @@
 > HermesForegroundService.kt, ListeningOrb.kt, SettingsScreen.kt), enumerated
 > every reachable state × visible message, generated 9 user journeys, and
 > cross-referenced. Every finding below was verified in code, not inferred.
+>
+> Update 2026-08-17 (after F-fixes, before v1.9.4): CRITICAL geometry bug
+> found and fixed — sheet anchors were INVERTED. Anchor values are the
+> position of the sheet's TOP edge (translation of a top-aligned full-screen
+> sheet). Old: PEEK=16% (sheet covered 84% of the screen — not a strip),
+> FULL=94% (sheet nearly vanished). New: PEEK=84% (slim bottom strip),
+> FULL=6% (fills screen). HALF=50% unchanged. F2's PEEK-strip layout is
+> correct now that PEEK actually sits near the bottom.
 
 ---
 

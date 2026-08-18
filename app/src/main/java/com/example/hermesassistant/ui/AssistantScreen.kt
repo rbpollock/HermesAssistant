@@ -111,9 +111,16 @@ fun AssistantScreen(
                 .background(Color(0xFF0D0F14))
         ) {
         val screenHeightPx = with(density) { maxHeight.toPx() }
-        val fullAnchor = screenHeightPx * 0.94f
+        // Anchor values = position of the sheet's TOP edge (translation
+        // of a top-aligned full-screen sheet). Previously these were
+        // inverted: PEEK at 16% meant 84% of the sheet was visible and
+        // FULL at 94% meant the sheet nearly vanished. Corrected:
+        //   PEEK -> top edge near the bottom (slim bottom strip)
+        //   HALF -> top edge at mid-screen
+        //   FULL -> top edge near the top (sheet fills the screen)
+        val fullAnchor = screenHeightPx * 0.06f
         val halfAnchor = screenHeightPx * 0.5f
-        val peekAnchor = screenHeightPx * 0.16f
+        val peekAnchor = screenHeightPx * 0.84f
 
         val sheetState = remember {
             AnchoredDraggableState(
