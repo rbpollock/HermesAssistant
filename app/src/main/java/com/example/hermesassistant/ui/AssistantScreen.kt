@@ -20,6 +20,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -383,13 +386,28 @@ private fun MessageList(
     onSelectMessage: (ChatMessage) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Column(
-        modifier = modifier
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 8.dp),
+    // Jetchat-style chat list: LazyColumn pinned to the bottom so the
+    // newest message is always visible (chat convention), session-colored
+    // bubbles, spacing grouped by message instead of manual margins.
+    val listState = rememberLazyListState()
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
+    }
+    LazyColumn(
+        state = listState,
+        modifier = modifier,
+        reverseLayout = false,
         verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            top = 4.dp, bottom = 8.dp
+        ),
     ) {
-        messages.forEach { m -> MessageBubble(m, onSelectMessage) }
+        items(
+            count = messages.size,
+            key = { index -> "${messages[index].sessionId}:${messages[index].text}:$index" },
+        ) { index ->
+            MessageBubble(messages[index], onSelectMessage)
+        }
     }
 }
 
