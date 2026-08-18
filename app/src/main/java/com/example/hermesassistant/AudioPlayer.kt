@@ -31,7 +31,14 @@ class AudioPlayer(private val context: Context) {
         fun onStatus(message: String)
     }
 
-    private data class PlaybackItem(val audioFile: File?, val spokenText: String?)
+    private data class PlaybackItem(
+        val audioFile: File?,
+        val spokenText: String?,
+        // True for user-initiated playback of a PARKED response (BT-only
+        // mode had no headset). Force the phone speaker so the user
+        // hears it even if a BT device connects between parking and tap.
+        val forceSpeaker: Boolean = false,
+    )
 
     private val playbackQueue = ArrayDeque<PlaybackItem>()
     private var isSpeaking = false
@@ -214,8 +221,22 @@ class AudioPlayer(private val context: Context) {
     fun pendingAudio(): File? = pendingAudioFile
     fun clearPendingAudio() { pendingAudioFile = null }
 
+    /** User tapped play on a parked response — always on the phone speaker. */
     fun playPending(file: File?) {
-        file?.let { enqueue(PlaybackItem(audioFile = it, spokenText = null)) }
+        file?.let { enqueue(PlaybackItem(audioFile = it, spokenText = null, forceSpeaker = true)) }
+    }
+
+    /** The built-in speaker output device, if present (API 23+). */
+    private fun findSpeakerDevice(): android.media.AudioDeviceInfo? {
+        return try {
+            val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).firstOrNull {
+                it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
+                    it.type == AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** True while an item is mid-playback (guards auto-listen re-entry). */
@@ -248,6 +269,17 @@ class AudioPlayer(private val context: Context) {
                 try {
                     mediaPlayer?.release()
                     mediaPlayer = MediaPlayer().apply {
+                        if (item.forceSpeaker) {
+                            // Parked-response tap: play on the PHONE SPEAKER
+                            // explicitly, even if a BT device just connected.
+                            setAudioAttributes(
+                                android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC)
+                                    .build()
+                            )
+                            findSpeakerDevice()?.let { setPreferredDevice(it) }
+                        }
                         setDataSource(file.absolutePath)
                         setOnCompletionListener { main { onPlaybackItemDone() } }
                         setOnErrorListener { _, _, _ -> main { onPlaybackItemDone() }; true }
