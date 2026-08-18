@@ -2,6 +2,7 @@ package com.example.hermesassistant.ui
 
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -44,9 +46,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,8 +69,6 @@ import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
 import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.animateTo
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.rememberCoroutineScope
 import com.example.hermesassistant.AssistantUiState
 import com.example.hermesassistant.ChatMessage
 import com.example.hermesassistant.KnownSession
@@ -198,6 +201,7 @@ private fun SheetContent(
     val orb = orbStateOf(state)
     var textInput by remember { mutableStateOf("") }
     val keyboard = LocalSoftwareKeyboardController.current
+    val scope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
@@ -274,15 +278,46 @@ private fun SheetContent(
             }
         }
 
-        // History bubbles (visible when expanded — one coherent surface)
+        // History (visible when expanded — one coherent surface).
+        // Jetchat-style: pinned session header + bottom-pinned list with
+        // a jump-to-bottom button when the user has scrolled up.
         if (sheetValue == SheetValue.FULL) {
-            MessageList(
-                messages = state.messages,
-                onSelectMessage = {},
+            val listState = rememberLazyListState()
+            SessionHeader(
+                sessionId = state.replySessionId,
+                sessionTitle = state.replySessionTitle,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1.4f),
-            )
+                    .weight(1.4f)
+            ) {
+                MessageList(
+                    messages = state.messages,
+                    onSelectMessage = {},
+                    listState = listState,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                val showJumpToBottom by remember {
+                    derivedStateOf {
+                        val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
+                        lastVisible < (state.messages.lastIndex)
+                    }
+                }
+                if (showJumpToBottom) {
+                    JumpToBottom(
+                        onClicked = {
+                            scope.launch {
+                                listState.animateScrollToItem(state.messages.lastIndex)
+                            }
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .padding(end = 16.dp, bottom = 8.dp),
+                    )
+                }
+            }
         }
 
         // Speak button + text input
@@ -384,12 +419,12 @@ private fun SessionChips(
 private fun MessageList(
     messages: List<ChatMessage>,
     onSelectMessage: (ChatMessage) -> Unit,
+    listState: LazyListState,
     modifier: Modifier = Modifier,
 ) {
     // Jetchat-style chat list: LazyColumn pinned to the bottom so the
     // newest message is always visible (chat convention), session-colored
     // bubbles, spacing grouped by message instead of manual margins.
-    val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.lastIndex)
     }
@@ -408,6 +443,74 @@ private fun MessageList(
         ) { index ->
             MessageBubble(messages[index], onSelectMessage)
         }
+    }
+}
+
+/** Pinned header showing which session is currently targeted (journey 3:
+ *  a glanceable confirmation, not buried in text). */
+@Composable
+private fun SessionHeader(
+    sessionId: String,
+    sessionTitle: String,
+    modifier: Modifier = Modifier,
+) {
+    val accent = if (sessionId.isEmpty()) Color(0xFF334155) else Color(sessionColor(sessionId))
+    val label = if (sessionId.isEmpty()) {
+        "Daily phone chat"
+    } else {
+        sessionTitle.ifEmpty { "…${sessionId.takeLast(10)}" }
+    }
+    Row(
+        modifier = modifier
+            .padding(top = 6.dp, bottom = 10.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(accent)
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = if (sessionId.isEmpty()) "No session targeted — " else "Replying to: ",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+        )
+    }
+}
+
+/** Small circular button that jumps back to the newest message. */
+@Composable
+private fun JumpToBottom(
+    onClicked: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        onClick = onClicked,
+        shape = CircleShape,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = modifier,
+    ) {
+        Icon(
+            imageVector = Icons.Default.KeyboardArrowDown,
+            contentDescription = "Jump to newest",
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .padding(8.dp)
+                .size(20.dp),
+        )
     }
 }
 
