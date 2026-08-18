@@ -64,6 +64,7 @@ class AssistantComposeActivity : ComponentActivity() {
                 SettingsScreen(
                     onBack = { showSettings = false },
                     onServerChanged = { viewModel.reconfigureServer() },
+                    state = state.value,
                 )
             } else {
                 AssistantScreen(

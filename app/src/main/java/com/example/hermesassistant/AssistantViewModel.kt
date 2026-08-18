@@ -37,6 +37,12 @@ data class AssistantUiState(
     // F6: true when a response is parked (BT-only + no headset) and
     // waiting for a tap to play — the speak button shows "TAP TO PLAY".
     val hasParkedAudio: Boolean = false,
+    // Diagnostics: the most recent notify event received over the WS,
+    // with a timestamp, so the settings screen can show whether the
+    // relay → app link is alive (empty = nothing ever received).
+    val lastNotifyKind: String = "",
+    val lastNotifyTitle: String = "",
+    val lastNotifyAt: Long = 0L,
     // Live mic amplitude (0f..1f, smoothed) while listening — drives the
     // orb/waveform. 0 when not listening.
     val rmsLevel: Float = 0f,
@@ -463,6 +469,16 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val message = json.optString("message", "")
         val host = json.optString("host", "")
         val sessionId = json.optString("session_id", "")
+
+        // Diagnostics: remember the most recent WS notify event so the
+        // settings screen can show the relay → app link is alive.
+        _uiState.update {
+            it.copy(
+                lastNotifyKind = kind,
+                lastNotifyTitle = title,
+                lastNotifyAt = System.currentTimeMillis(),
+            )
+        }
 
         val isDuplicate = isDuplicateNotify(kind, title, message, sessionId)
 

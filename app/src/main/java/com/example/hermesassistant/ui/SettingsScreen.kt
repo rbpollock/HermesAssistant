@@ -3,8 +3,10 @@ package com.example.hermesassistant.ui
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -12,9 +14,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -52,6 +57,7 @@ import com.example.hermesassistant.ui.theme.HermesTheme
 fun SettingsScreen(
     onBack: () -> Unit,
     onServerChanged: () -> Unit,
+    state: com.example.hermesassistant.AssistantUiState? = null,
 ) {
     HermesTheme {
         val context = LocalContext.current
@@ -153,6 +159,108 @@ fun SettingsScreen(
                 },
             )
 
+            SectionLabel("Diagnostics")
+            if (state != null) {
+                val notifEnabled = androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()
+                val permGranted = androidx.core.content.ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.POST_NOTIFICATIONS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                val channel = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+                    nm.getNotificationChannel("hermes_events")
+                } else null
+                val channelImportance = channel?.importance ?: -1
+                val isBatteryIgnoring = try {
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+                    pm.isIgnoringBatteryOptimizations(context.packageName)
+                } catch (e: Exception) { false }
+
+                DiagnosticRow(
+                    label = "WebSocket",
+                    value = if (state.isConnected) "CONNECTED to ${ServerConfig.host(context)}:${ServerConfig.port(context)}"
+                            else "DISCONNECTED — reconnecting",
+                    ok = state.isConnected,
+                )
+                DiagnosticRow(
+                    label = "Notification permission",
+                    value = if (permGranted) "GRANTED" else "DENIED (Android 13+ blocks shade items)",
+                    ok = permGranted,
+                )
+                DiagnosticRow(
+                    label = "Notifications enabled",
+                    value = if (notifEnabled) "ON" else "OFF (blocked in OS Settings)",
+                    ok = notifEnabled,
+                )
+                DiagnosticRow(
+                    label = "Notification channel",
+                    value = when {
+                        channelImportance >= android.app.NotificationManager.IMPORTANCE_DEFAULT -> "active (importance $channelImportance)"
+                        channelImportance == android.app.NotificationManager.IMPORTANCE_NONE -> "BLOCKED — unmute in system settings"
+                        else -> "missing/unknown"
+                    },
+                    ok = channelImportance >= android.app.NotificationManager.IMPORTANCE_DEFAULT,
+                )
+                DiagnosticRow(
+                    label = "Battery optimization",
+                    value = if (isBatteryIgnoring) "exempt (good)" else "NOT exempt — could delay delivery",
+                    ok = isBatteryIgnoring,
+                )
+                val lastAt = state.lastNotifyAt
+                if (lastAt > 0L) {
+                    val ago = ((System.currentTimeMillis() - lastAt) / 1000).coerceAtLeast(0)
+                    DiagnosticRow(
+                        label = "Last relay event",
+                        value = "${state.lastNotifyKind} · ${state.lastNotifyTitle} · ${ago}s ago",
+                        ok = true,
+                    )
+                } else {
+                    DiagnosticRow(
+                        label = "Last relay event",
+                        value = "NONE RECEIVED — relay may not be pushing (server-side?)",
+                        ok = false,
+                    )
+                }
+            } else {
+                Caption("Opening...")
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = {
+                    status = "Posted test notification (ID 9999)..."
+                    try {
+                        val pendingIntent = android.app.PendingIntent.getActivity(
+                            context, 9999,
+                            Intent(context, com.example.hermesassistant.AssistantComposeActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            },
+                            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                        )
+                        val builder = androidx.core.app.NotificationCompat.Builder(context, "hermes_events")
+                            .setSmallIcon(android.R.drawable.ic_dialog_info)
+                            .setContentTitle("Test notification")
+                            .setContentText("Posted ${java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())} — did you see me?")
+                            .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                            .setAutoCancel(true)
+                            .setContentIntent(pendingIntent)
+                        androidx.core.app.NotificationManagerCompat.from(context).notify(9999, builder.build())
+                        status = "Test notification posted (ID 9999). Check your shade."
+                    } catch (e: Exception) {
+                        status = "Test failed: ${e.javaClass.simpleName}: ${e.message?.take(120)}"
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.primary,
+                ),
+            ) {
+                Text("SEND TEST NOTIFICATION", fontWeight = FontWeight.Bold)
+            }
+
             SectionLabel("About")
             Caption("Version ${currentVersion(context)}")
             Text(
@@ -233,6 +341,34 @@ fun SettingsScreen(
                     fontSize = 13.sp,
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagnosticRow(label: String, value: String, ok: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 6.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (ok) androidx.compose.ui.graphics.Color(0xFF34D399) else androidx.compose.ui.graphics.Color(0xFFF87171)),
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text(value, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
             }
         }
     }
