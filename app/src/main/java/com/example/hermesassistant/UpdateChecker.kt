@@ -267,7 +267,7 @@ object UpdateChecker {
                 context, UPDATE_NOTIF_ID, openIntent,
                 android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
             )
-            val updateIntent = Intent(context, MainActivity::class.java).apply {
+            val updateIntent = Intent(context, AssistantComposeActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 action = ACTION_UPDATE
                 putExtra("update_apk_url", release.apkUrl)

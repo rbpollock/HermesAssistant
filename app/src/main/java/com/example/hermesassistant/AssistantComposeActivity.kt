@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -81,6 +83,9 @@ class AssistantComposeActivity : ComponentActivity() {
             intent?.getStringExtra("target_session_title").orEmpty(),
             intent?.getStringExtra("target_message").orEmpty(),
         )
+        if (isUpdateAction(intent?.action)) {
+            handleUpdateAction(intent)
+        }
 
         // Mic permission bootstrap: without RECORD_AUDIO the service's
         // wake word cannot start. This mirrors MainActivity's onCreate —
@@ -133,8 +138,63 @@ class AssistantComposeActivity : ComponentActivity() {
         viewModel.connectIfNeeded()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent) // keep getIntent() in sync for singleTask relaunch
+        if (isVoiceInvocation(intent.action)) {
+            viewModel.beginListening()
+        }
+        if (isUpdateAction(intent.action)) {
+            handleUpdateAction(intent)
+        }
+        viewModel.handleTargetSessionIntent(
+            intent.getStringExtra("target_session_id").orEmpty(),
+            intent.getStringExtra("target_session_title").orEmpty(),
+            intent.getStringExtra("target_message").orEmpty(),
+        )
+    }
+
     override fun onPause() {
         super.onPause()
         try { unregisterReceiver(serviceReceiver) } catch (e: Exception) { /* not registered */ }
+    }
+
+    // ------------------------------------------------------------------
+    // Update action (from the update notification / UpdateChecker)
+    // ------------------------------------------------------------------
+
+    private fun isVoiceInvocation(action: String?): Boolean {
+        return action == Intent.ACTION_ASSIST ||
+            action == Intent.ACTION_VOICE_COMMAND ||
+            action == "com.example.hermesassistant.START_LISTENING"
+    }
+
+    private fun isUpdateAction(action: String?): Boolean {
+        return action == UpdateChecker.ACTION_UPDATE
+    }
+
+    private fun handleUpdateAction(intent: Intent?) {
+        val apkUrl = intent?.getStringExtra("update_apk_url").orEmpty()
+        if (apkUrl.isEmpty()) {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            return
+        }
+        if (!UpdateChecker.canRequestInstalls(this)) {
+            viewModel.setStatus("Allow installs from this app, then retry", StatusRingView.State.CONNECTED)
+            try {
+                startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(UpdateChecker.RELEASE_PAGE_URL)))
+            }
+            return
+        }
+        viewModel.setStatus("Downloading update...", StatusRingView.State.THINKING)
+        Thread {
+            val result = UpdateChecker.installRelease(this, UpdateChecker.ReleaseInfo(
+                versionName = intent?.getStringExtra("update_version").orEmpty(),
+                apkUrl = apkUrl,
+            ))
+            runOnUiThread { viewModel.setStatus(result, StatusRingView.State.CONNECTED) }
+        }.start()
     }
 }

@@ -138,7 +138,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         val notifId = (sessionId.hashCode() and 0x7fffffff) % 1000000 + 200
 
         // Tapping the follow-up opens the app at the same session chip
-        val openIntent = Intent(context, MainActivity::class.java).apply {
+        val openIntent = Intent(context, AssistantComposeActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra("target_session_id", sessionId)
             putExtra("target_session_title", title)

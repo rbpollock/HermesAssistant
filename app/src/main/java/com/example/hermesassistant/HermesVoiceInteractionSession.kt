@@ -9,8 +9,9 @@ class HermesVoiceInteractionSession(context: Context) : VoiceInteractionSession(
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
         
-        // When the OS invokes the assistant, launch MainActivity and tell it to auto-listen
-        val intent = Intent(context, MainActivity::class.java).apply {
+        // When the OS invokes the assistant, launch the Compose surface
+        // and tell it to auto-listen
+        val intent = Intent(context, AssistantComposeActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             action = "com.example.hermesassistant.START_LISTENING"
         }
