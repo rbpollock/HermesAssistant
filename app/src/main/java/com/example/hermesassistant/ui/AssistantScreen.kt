@@ -311,30 +311,34 @@ private fun SheetContent(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // Listening orb + status (the invocation focus)
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                ListeningOrb(state = orb, rmsLevel = state.rmsLevel, sizeDp = 140)
-                Spacer(Modifier.height(18.dp))
-                Text(
-                    text = state.status,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    fontSize = 18.sp,
-                    maxLines = 1,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = state.subTextLabel,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                    maxLines = 2,
-                )
+        // Listening orb + status (the invocation focus). Hidden in FULL —
+        // when the chat is active the history owns the space (the user
+        // asked for the orb to disappear once chat is open).
+        if (sheetValue != SheetValue.FULL) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    ListeningOrb(state = orb, rmsLevel = state.rmsLevel, sizeDp = 140)
+                    Spacer(Modifier.height(18.dp))
+                    Text(
+                        text = state.status,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        fontSize = 18.sp,
+                        maxLines = 1,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        text = state.subTextLabel,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        maxLines = 2,
+                    )
+                }
             }
         }
 
@@ -346,7 +350,7 @@ private fun SheetContent(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1.4f)
+                    .weight(1f)
             ) {
                 MessageList(
                     messages = state.messages,

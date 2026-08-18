@@ -32,7 +32,7 @@ data class AssistantUiState(
     val replySessionTitle: String = "",
     val queueCount: Int = 0,
     val voiceActive: Boolean = false,
-    val speakButtonLabel: String = "LISTENING FOR WAKE WORD",
+    val speakButtonLabel: String = "TAP TO SPEAK",
     val subTextLabel: String = "Tap to speak · wake word: \"Hey Hermes\"",
     // F6: true when a response is parked (BT-only + no headset) and
     // waiting for a tap to play — the speak button shows "TAP TO PLAY".
@@ -226,7 +226,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                         setStatusInternal("Listening...", StatusRingView.State.LISTENING)
                     }
                     VoiceInput.State.IDLE -> {
-                        updateSpeakLabel("LISTENING FOR WAKE WORD")
+                        updateSpeakLabel("TAP TO SPEAK")
                         setStatusInternal("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
                     }
                 }
@@ -295,8 +295,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     /** Back to wake-word mode (used after errors / cancelled listens). */
     private fun startWakeWord() {
         HermesForegroundService.startWakeWordNow()
-        updateSpeakLabel("LISTENING FOR WAKE WORD")
-       setStatusInternal("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
+        updateSpeakLabel("TAP TO SPEAK")
+        setStatusInternal("Listening for \"Hey Hermes\"", StatusRingView.State.IDLE)
     }
 
     /** A full phrase was captured by Vosk while offline — queue it. */
