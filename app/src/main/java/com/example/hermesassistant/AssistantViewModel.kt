@@ -472,7 +472,14 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             return
         }
 
-        if (sessionId.isNotEmpty()) {
+        // Q3 decision: auto-arm the reply target ONLY when Hermes is
+        // asking something (question/approval). A routine "Hermes
+        // finished" notify must NOT silently redirect the next voice or
+        // typed message to that session — that surprised users. Tapping
+        // the notification body still arms deliberately via
+        // handleTargetSessionIntent.
+        val isAsking = kind == "question" || kind == "approval"
+        if (isAsking && sessionId.isNotEmpty()) {
             replySessionId = sessionId
             replySessionTitle = sessionTitleFromNotify(title, sessionId)
         }
