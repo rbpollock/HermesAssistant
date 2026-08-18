@@ -381,6 +381,17 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         pushState()
     }
 
+    /**
+     * Reconnect against the current ServerConfig. Called after the user
+     * changes host/port in settings — the old socket is cancelled so the
+     * next connect targets the new server (journey 7: no stale "connecting"
+     * state against the old host).
+     */
+    fun reconfigureServer() {
+        relay.cancel()
+        connectIfNeeded()
+    }
+
     /** Expose status updates to UI-driven flows (e.g. update install). */
     fun setStatus(text: String, state: StatusRingView.State) {
         setStatusInternal(text, state)
@@ -462,7 +473,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         val pendingIntent = android.app.PendingIntent.getActivity(
             context,
             notifId,
-            Intent(context, MainActivity::class.java).apply {
+            // Phase 4: notification tap-through opens the Compose surface
+            // (shares the app-scoped ViewModel, so the session chip is
+            // pre-selected from the extras below).
+            Intent(context, AssistantComposeActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
                 putExtra("target_session_id", sessionId)
                 putExtra("target_session_title", title)

@@ -8,10 +8,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.hermesassistant.ui.AssistantScreen
+import com.example.hermesassistant.ui.SettingsScreen
 import kotlinx.coroutines.launch
 
 /**
@@ -22,6 +26,7 @@ import kotlinx.coroutines.launch
 class AssistantComposeActivity : ComponentActivity() {
 
     private val viewModel: AssistantViewModel by viewModels { AppViewModelProvider.factory }
+    private var showSettings by mutableStateOf(false)
 
     private val serviceReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -46,13 +51,20 @@ class AssistantComposeActivity : ComponentActivity() {
 
         setContent {
             val state = viewModel.uiState.collectAsState()
-            AssistantScreen(
-                state = state.value,
-                onSpeak = { viewModel.onSpeakButtonPressed() },
-                onSendText = { viewModel.sendUserMessage(it) },
-                onSelectSession = { viewModel.selectSession(it.id, it.title) },
-                onSettings = { startActivity(Intent(this, SettingsActivity::class.java)) },
-            )
+            if (showSettings) {
+                SettingsScreen(
+                    onBack = { showSettings = false },
+                    onServerChanged = { viewModel.reconfigureServer() },
+                )
+            } else {
+                AssistantScreen(
+                    state = state.value,
+                    onSpeak = { viewModel.onSpeakButtonPressed() },
+                    onSendText = { viewModel.sendUserMessage(it) },
+                    onSelectSession = { viewModel.selectSession(it.id, it.title) },
+                    onSettings = { showSettings = true },
+                )
+            }
         }
 
         // Auto-start listening on invocation (same as the legacy activity).

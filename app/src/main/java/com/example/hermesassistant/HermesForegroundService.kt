@@ -518,16 +518,18 @@ class HermesForegroundService : Service(), RecognitionListener {
         }
     }
 
-    /** Launch the full MainActivity into listening mode. */
+    /** Launch the assistant surface into listening mode. Prefers the
+     *  Compose bottom-sheet (Phase 3); both surfaces share the app-scoped
+     *  AssistantViewModel so state carries over either way. */
     private fun launchMainActivity() {
-        val launch = Intent(this, MainActivity::class.java).apply {
+        val launch = Intent(this, AssistantComposeActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             action = "com.example.hermesassistant.START_LISTENING"
         }
         try {
             startActivity(launch)
         } catch (e: Exception) {
-            // e.g. background activity start blocked — MainActivity may be
+            // e.g. background activity start blocked — a surface may be
             // alive in the background; also send the broadcast as fallback.
             sendBroadcast(
                 Intent(ACTION_WAKE_WORD).setPackage(packageName)
