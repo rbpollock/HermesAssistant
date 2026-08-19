@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -63,8 +64,10 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.AnchoredDraggableState
@@ -170,10 +173,20 @@ fun AssistantScreen(
                     .clickable { scope.launch { sheetState.animateTo(SheetValue.PEEK) } }
             )
 
-            // The sheet
+            // The sheet. anchoredDraggable only handles the gesture —
+            // the offset must be APPLIED explicitly via .offset{} (the
+            // canonical bottom-sheet pattern). Without this the sheet
+            // never moved: state said PEEK but the full-height sheet
+            // stayed pinned to the top, rendering the strip content at
+            // the top of a near-fullscreen surface. Positive anchors
+            // translate the top-aligned full-height sheet DOWN:
+            //   PEEK = +0.84H -> top edge near bottom (slim bottom strip)
+            //   HALF = +0.5H  -> top half off-screen
+            //   FULL = +0.06H -> sheet fills the screen
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .offset { IntOffset(0, sheetState.requireOffset().roundToInt()) }
                     .padding(top = 120.dp)
                     .anchoredDraggable(sheetState, Orientation.Vertical)
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
