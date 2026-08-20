@@ -118,6 +118,7 @@ object UpdateChecker {
      */
     fun downloadAndInstall(context: android.content.Context, apkUrl: String): String? {
         val notifier = DownloadNotifier(context)
+        var total = 0L
         return try {
             val dir = context.getExternalFilesDir(null)
                 ?: context.filesDir
@@ -132,7 +133,7 @@ object UpdateChecker {
             downloadClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return "Download failed (HTTP ${response.code})"
                 val body = response.body ?: return "Download failed (no body)"
-                val total = body.contentLength()
+                total = body.contentLength()
                 notifier.show(total)
                 try {
                     body.byteStream().use { input ->
@@ -153,6 +154,21 @@ object UpdateChecker {
             }
 
             if (!target.exists() || target.length() == 0L) return "Download failed (empty file)"
+            // A partial-but-nonzero file would be handed to the installer
+            // as a corrupt APK -> "App not installed." Verify against the
+            // advertised Content-Length when we have it (GitHub always
+            // sends it), AND validate it's actually a ZIP/APK. The
+            // download client has readTimeout(0) so a slow link can't
+            // time out, but a dropped connection mid-stream would end the
+            // copy early — both checks catch that.
+            if (total > 0L && target.length() != total) {
+                return "Download failed (incomplete: ${target.length()} of $total bytes)"
+            }
+            try {
+                java.util.zip.ZipFile(target).use { }
+            } catch (e: Exception) {
+                return "Download failed (not a valid APK: ${e.message})"
+            }
 
             val uri = androidx.core.content.FileProvider.getUriForFile(
                 context,
