@@ -44,6 +44,14 @@ object UpdateChecker {
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // Dedicated client for APK downloads: the 102MB stream must not be
+    // cut by a 10s read timeout on a slow/congested link (Tailscale,
+    // cellular). Same no-read-timeout pattern as the relay WebSocket.
+    private val downloadClient = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
     /**
      * Fetch the latest release from the GitHub atom feed (no REST API rate
      * limit). Returns null on any network / parse failure.
@@ -99,11 +107,17 @@ object UpdateChecker {
      * Download the given APK URL into filesDir/apk-updates/ and hand it to
      * the system installer via FileProvider + ACTION_VIEW.
      *
+     * Posts a progress notification while streaming (the 102MB download is
+     * otherwise silent), verifies the file matches the advertised
+     * Content-Length (so a truncated download can never reach the
+     * installer as a corrupt APK), then hands off to the system installer.
+     *
      * Returns an error message on failure, or null on success (the system
      * install dialog takes over). Caller must check
      * canRequestPackageInstalls() first (Android 8+ unknown-sources gate).
      */
     fun downloadAndInstall(context: android.content.Context, apkUrl: String): String? {
+        val notifier = DownloadNotifier(context)
         return try {
             val dir = context.getExternalFilesDir(null)
                 ?: context.filesDir
@@ -115,10 +129,26 @@ object UpdateChecker {
             if (target.exists()) target.delete()
 
             val request = Request.Builder().url(apkUrl).build()
-            client.newCall(request).execute().use { response ->
+            downloadClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) return "Download failed (HTTP ${response.code})"
-                response.body?.byteStream()?.use { input ->
-                    FileOutputStream(target).use { output -> input.copyTo(output) }
+                val body = response.body ?: return "Download failed (no body)"
+                val total = body.contentLength()
+                notifier.show(total)
+                try {
+                    body.byteStream().use { input ->
+                        FileOutputStream(target).use { output ->
+                            val buf = ByteArray(DEFAULT_BUFFER_SIZE)
+                            var read: Int
+                            var done = 0L
+                            while (input.read(buf).also { read = it } != -1) {
+                                output.write(buf, 0, read)
+                                done += read
+                                notifier.update(done, total)
+                            }
+                        }
+                    }
+                } finally {
+                    notifier.dismiss()
                 }
             }
 
@@ -137,6 +167,7 @@ object UpdateChecker {
             context.startActivity(installIntent)
             null // success — the system installer is showing
         } catch (e: Exception) {
+            notifier.dismiss()
             "Install failed: ${e.message}"
         }
     }
@@ -295,6 +326,82 @@ object UpdateChecker {
             manager.notify(UPDATE_NOTIF_ID, builder.build())
         } catch (e: Exception) {
             // Update notification is best-effort
+        }
+    }
+
+    /**
+     * Posts a determinate-progress notification while the APK download
+     * streams. The user asked for a screen notification during the update
+     * ("delay and no screen notification") — this is that notification.
+     *
+     * - show(total): indeterminate bar while the length is unknown
+     * - update(done, total): determinate % while streaming
+     * - dismiss(): remove it before the installer takes over
+     */
+    private class DownloadNotifier(context: android.content.Context) {
+        private val appContext = context.applicationContext
+        private val manager = appContext.getSystemService(android.content.Context.NOTIFICATION_SERVICE)
+                as android.app.NotificationManager
+        private val channelId = UPDATE_CHANNEL
+        private val notifId = UPDATE_NOTIF_ID + 2
+
+        init {
+            try {
+                manager.createNotificationChannel(
+                    android.app.NotificationChannel(
+                        channelId, "Hermes Updates", android.app.NotificationManager.IMPORTANCE_DEFAULT
+                    )
+                )
+            } catch (_: Exception) {}
+        }
+
+        fun show(total: Long) {
+            if (!canNotify()) return
+            val indeterminate = total <= 0L
+            val builder = androidx.core.app.NotificationCompat.Builder(
+                appContext, channelId
+            )
+                .setSmallIcon(android.R.drawable.ic_popup_sync)
+                .setContentTitle("Downloading Hermes Assistant update…")
+                .setContentText(if (indeterminate) "Starting download…" else "0%")
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setProgress(100, 0, indeterminate)
+            try { manager.notify(notifId, builder.build()) } catch (_: Exception) {}
+        }
+
+        fun update(done: Long, total: Long) {
+            if (!canNotify()) return
+            val pct = if (total > 0L) ((done * 100) / total).toInt() else -1
+            val builder = androidx.core.app.NotificationCompat.Builder(
+                appContext, channelId
+            )
+                .setSmallIcon(android.R.drawable.ic_popup_sync)
+                .setContentTitle("Downloading Hermes Assistant update…")
+                .setContentText(
+                    if (total > 0L) {
+                        "%.1f / %.1f MB".format(done / 1048576.0, total / 1048576.0)
+                    } else {
+                        "%.1f MB".format(done / 1048576.0)
+                    }
+                )
+                .setOnlyAlertOnce(true)
+                .setOngoing(true)
+                .setProgress(100, if (total > 0L) pct else 0, total <= 0L)
+            try { manager.notify(notifId, builder.build()) } catch (_: Exception) {}
+        }
+
+        fun dismiss() {
+            try { manager.cancel(notifId) } catch (_: Exception) {}
+        }
+
+        private fun canNotify(): Boolean {
+            return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                    appContext,
+                    android.Manifest.permission.POST_NOTIFICATIONS
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            } else true
         }
     }
 }

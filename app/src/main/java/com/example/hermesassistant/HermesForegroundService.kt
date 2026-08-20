@@ -119,7 +119,7 @@ class HermesForegroundService : Service(), RecognitionListener {
 
         /** Hide the compact overlay when the full activity comes forward. */
         fun hideOverlayIfShown() {
-            instance?.hideOverlay()
+            instance?.overlay?.hide()
         }
 
         private fun command(action: String) {
@@ -137,12 +137,9 @@ class HermesForegroundService : Service(), RecognitionListener {
     private var dictationFromWakeWord = false
     private var micPermissionGranted = false
 
-    // "Over other apps" compact panel (bottom third). Shown when the
-    // wake word fires while another app is foreground; tapping it
-    // expands to the full MainActivity.
-    private var overlayView: android.view.View? = null
-    private var overlayStatusText: android.widget.TextView? = null
-    private var overlaySubText: android.widget.TextView? = null
+    // "Over other apps" compact panel. The Compose AssistantOverlay is
+    // created lazily (overlay) — it replaces the legacy XML panel fields
+    // that were removed in the Compose redesign cleanup.
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -198,7 +195,6 @@ class HermesForegroundService : Service(), RecognitionListener {
             // is heard or stopWakeWord() is called.
             voskService?.startListening(this)
             updateNotification("Listening for \"Hey Hermes\"")
-            updateOverlayStatus("Listening for \"Hey Hermes\"", "Say \"Hey Hermes\" or tap to open")
         } catch (e: Exception) {
             updateNotification("Vosk error: ${e.message?.take(60)}")
         }
@@ -231,10 +227,8 @@ class HermesForegroundService : Service(), RecognitionListener {
             voskService?.startListening(this, DICTATION_TIMEOUT_MS)
             if (dictationFromWakeWord) {
                 updateNotification("Listening...")
-                updateOverlayStatus("Listening...", "Say your message")
             } else {
                 updateNotification("Dictating (offline)")
-                updateOverlayStatus("Dictating (offline)", "Speak — your words will be queued")
             }
         } catch (e: Exception) {
             updateNotification("Vosk error: ${e.message?.take(60)}")
@@ -503,13 +497,20 @@ class HermesForegroundService : Service(), RecognitionListener {
     private fun wakeWordHeard() {
         stopVoskService()
         updateNotification("Wake word heard")
-        // Chime immediately, then launch the Compose assistant surface —
-        // it auto-listens (Google STT online / Vosk offline) and the
-        // sheet rises to HALF with the orb. The legacy View overlay
-        // (overlay_panel.xml) is no longer used: it predates the Compose
-        // redesign and the new sheet is the invocation surface.
+        // Chime immediately. Then surface the assistant:
+        //  - if draw-over is granted, show the COMPOSE floating overlay
+        //    (Google-Assistant style: no focus steal, stays over the
+        //    user's app) with the mic ready;
+        //  - otherwise launch the full Compose activity as fallback.
         ChimePlayer.playStart(this)
-        launchMainActivity()
+        if (overlay.canShow()) {
+            overlay.show(
+                onExpand = { expandFromOverlay() },
+                onMic = { AppViewModelProvider.viewModel.beginListening() },
+            )
+        } else {
+            launchMainActivity()
+        }
     }
 
     /** Launch the assistant surface into listening mode. Prefers the
@@ -531,80 +532,19 @@ class HermesForegroundService : Service(), RecognitionListener {
         }
     }
 
-    // --- Compact overlay (bottom third, over other apps) ---
+    // --- Compact overlay (over other apps) ---
+    // The Compose AssistantOverlay replaces the legacy XML overlay panel
+    // (overlay_panel.xml) which predates the redesign. The old window
+    // plumbing was the right idea; the new card is a real Compose surface
+    // bound to the app-scoped ViewModel (same orb/status/mic as the
+    // sheet), so it stays visually consistent.
 
-    private fun showOverlay() {
-        hideOverlay()
-        try {
-            val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
-            val inflater = getSystemService(android.content.Context.LAYOUT_INFLATER_SERVICE) as android.view.LayoutInflater
-            val view = inflater.inflate(R.layout.overlay_panel, null)
-            overlayView = view
-            overlayStatusText = view.findViewById(R.id.overlayStatusText)
-            overlaySubText = view.findViewById(R.id.overlaySubText)
-
-            val expand = view.findViewById<android.view.View>(R.id.overlayExpandBar)
-            expand.setOnClickListener { expandFromOverlay() }
-            view.findViewById<android.view.View>(R.id.overlaySpeakButton).setOnClickListener {
-                expandFromOverlay()
-            }
-
-            // Compact card: the TAP TO SPEAK button is hidden (its height +
-            // margin ≈ 56dp is no longer part of the window), and the whole
-            // window is lifted ~5% of the screen height so the expand bar
-            // (top edge) sits higher on screen than the old bottom-third
-            // position.
-            val dm = resources.displayMetrics
-            val baseHeight = (dm.heightPixels / 3).coerceAtLeast(dp(220))
-            val hiddenButtonHeight = dp(44) + dp(12) // button + its margin
-            val height = (baseHeight - hiddenButtonHeight).coerceAtLeast(dp(160))
-            val liftUp = (dm.heightPixels * 0.05f).toInt()
-            val params = android.view.WindowManager.LayoutParams(
-                android.view.WindowManager.LayoutParams.MATCH_PARENT,
-                height,
-                android.view.WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                android.view.WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    android.view.WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                android.graphics.PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = android.view.Gravity.BOTTOM
-                // y is the offset from the bottom edge; positive lifts the
-                // window up so the expand bar clears the gesture zone.
-                y = liftUp
-            }
-            wm.addView(view, params)
-            updateOverlayStatus("Wake word heard", "Tap to open and speak")
-        } catch (e: Exception) {
-            overlayView = null
-            // Overlay failed — just launch the activity instead
-            launchMainActivity()
-        }
-    }
-
-    private fun hideOverlay() {
-        val view = overlayView ?: return
-        overlayView = null
-        overlayStatusText = null
-        overlaySubText = null
-        try {
-            val wm = getSystemService(android.content.Context.WINDOW_SERVICE) as android.view.WindowManager
-            wm.removeView(view)
-        } catch (e: Exception) {
-            // Already removed
-        }
-    }
+    private val overlay by lazy { AssistantOverlay(this) }
 
     private fun expandFromOverlay() {
-        hideOverlay()
+        overlay.hide()
         launchMainActivity()
     }
-
-    private fun updateOverlayStatus(status: String, sub: String) {
-        overlayStatusText?.text = status
-        overlaySubText?.text = sub
-    }
-
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
     // --- Foreground notification ---
     private fun startAsForeground() {
@@ -656,7 +596,7 @@ class HermesForegroundService : Service(), RecognitionListener {
 
     override fun onDestroy() {
         stopVoskService()
-        hideOverlay()
+        overlay.hide()
         try { replyTts?.stop(); replyTts?.shutdown() } catch (e: Exception) {}
         replyTts = null
         setInstance(null)

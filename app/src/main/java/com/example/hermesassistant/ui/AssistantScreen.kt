@@ -187,7 +187,6 @@ fun AssistantScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .offset { IntOffset(0, sheetState.requireOffset().roundToInt()) }
-                    .padding(top = 120.dp)
                     .anchoredDraggable(sheetState, Orientation.Vertical)
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .background(MaterialTheme.colorScheme.surface)
@@ -272,6 +271,11 @@ private fun SheetContent(
             }
             return@Column
         }
+
+        // Breathing room above the header row in HALF/FULL states (the
+        // PEEK strip intentionally skips it — the strip must sit at the
+        // top of the sheet so it stays visible in the bottom band).
+        Spacer(Modifier.height(120.dp))
 
         // Header row: expand/collapse chevron + session chips + settings
         Row(
