@@ -9,7 +9,9 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -57,6 +59,16 @@ class AssistantComposeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppViewModelProvider.init(application)
+
+        // Draw behind the system bars explicitly (Android 15 enforces this
+        // for targetSdk 35+ anyway). Dark bar styles: transparent scrim over
+        // the dark app background + light status icons. All Compose surfaces
+        // then consume WindowInsets (statusBars/navigationBars) themselves —
+        // the sheet's FULL anchor, the composer, and Settings.
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
 
         setContent {
             val state = viewModel.uiState.collectAsState()

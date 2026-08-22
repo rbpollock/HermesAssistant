@@ -12,14 +12,16 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -119,7 +121,15 @@ fun AssistantScreen(
         //   PEEK -> top edge near the bottom (slim bottom strip)
         //   HALF -> top edge at mid-screen
         //   FULL -> top edge near the top (sheet fills the screen)
-        val fullAnchor = screenHeightPx * 0.06f
+        //
+        // FULL accounts for the status bar (the sheet's top content —
+        // drag handle + header — must clear the clock/battery row, and
+        // on Android 15+ edge-to-edge is enforced so the window really
+        // does extend behind it). WindowInsets.statusBars reports 0 when
+        // the system already insets content (non-edge-to-edge), so this
+        // is safe on both.
+        val statusBarTopPx = WindowInsets.statusBars.getTop(density).toFloat()
+        val fullAnchor = statusBarTopPx + with(density) { 8.dp.toPx() }
         val halfAnchor = screenHeightPx * 0.5f
         val peekAnchor = screenHeightPx * 0.84f
 
