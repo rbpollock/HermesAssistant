@@ -200,11 +200,10 @@ private fun AssistantMessageView(msg: GatewayMsg) {
                 is GatewayPart.Tool -> ToolRowView(part, streaming = msg.pending)
                 is GatewayPart.Text -> {
                     if (part.text.isNotBlank()) {
-                        Text(
+                        // Desktop parity: assistant text renders as markdown
+                        // (Streamdown port) — headings, code, lists, links.
+                        MarkdownText(
                             text = part.text,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            fontSize = 13.sp, // --conversation-text-font-size
-                            lineHeight = 19.sp,
                             modifier = Modifier.padding(start = 12.dp, top = 2.dp), // --message-text-indent
                         )
                     }
