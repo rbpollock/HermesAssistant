@@ -211,11 +211,12 @@ class GatewayClient(
         if (reconnectRunnable != null) return // already scheduled
         val delay = minOf(30_000L, 2_000L shl minOf(reconnectAttempts, 4))
         reconnectAttempts++
-        reconnectRunnable = Runnable {
+        val runnable = Runnable {
             reconnectRunnable = null
             connect()
         }
-        reconnectHandler.postDelayed(reconnectRunnable, delay)
+        reconnectRunnable = runnable
+        reconnectHandler.postDelayed(runnable, delay)
     }
 
     private fun stopReconnectLoop() {
