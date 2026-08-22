@@ -126,6 +126,8 @@ Document (in repo README or server notes): restarting serve is `screen -S hermes
 
 ## Milestone 1 — Android: transport + transcript, keep all existing UX
 
+**Status 2026-08-22: transport done + shipped as v2.0.0-alpha1.** GatewayClient/Auth/Api/Events/Bridge/OneShot written; ViewModel wired (gateway mode default ON, session.create + prompt.submit, streaming events -> history + local TTS + shade notification); FGS wake-word routes via GatewayBridge; notification inline reply does one-shot gateway submit; Settings has toggle + port/user/pass + Diagnostics rows. Sheet rework (transcript + tool chips) = next chunk.
+
 New files (all under `app/src/main/java/com/example/hermesassistant/`):
 
 ### Task 1.1: `GatewayClient.kt` — JSON-RPC WS transport (core)

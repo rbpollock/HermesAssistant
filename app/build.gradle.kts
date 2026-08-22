@@ -26,7 +26,11 @@ val appVersionName = providers.exec {
     ?: "0.0.0"
 
 val appVersionCode = run {
-    val parts = appVersionName.split(".").mapNotNull { it.toIntOrNull() }
+    // Leading-digit parsing: "2.0.0-alpha1" -> [2, 0, 0] so pre-release
+    // tags still yield a strictly increasing versionCode (20000).
+    val parts = appVersionName.split(".").mapNotNull { part ->
+        part.takeWhile { it.isDigit() }.toIntOrNull()
+    }
     if (parts.size >= 3) parts[0] * 10000 + parts[1] * 100 + parts[2]
     else 1
 }
@@ -54,6 +58,11 @@ android {
             optimization {
                 enable = false
             }
+            // Sign release with the debug keystore — the same cert every
+            // published OTA build has used (verified: v1.10.2 is
+            // CN=Android Debug). An unsigned APK never installs and a
+            // different cert would force an uninstall/reinstall.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     buildFeatures {
