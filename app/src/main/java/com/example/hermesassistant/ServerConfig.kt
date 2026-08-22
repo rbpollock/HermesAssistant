@@ -27,6 +27,10 @@ object ServerConfig {
 
     const val DEFAULT_GATEWAY_PORT = "9119"
     const val DEFAULT_GATEWAY_USER = "robbie"
+    // Bundled default so the client connects with zero setup (the server's
+    // auth gate always requires a provider on non-loopback binds; there is
+    // no unauthenticated path in hermes v0.20.4). Overridable in Settings.
+    const val DEFAULT_GATEWAY_PASS = "KYYRHuaRikkCqfb7"
 
     fun host(context: Context): String =
         prefs(context).getString(KEY_HOST, DEFAULT_HOST) ?: DEFAULT_HOST
@@ -74,7 +78,9 @@ object ServerConfig {
         prefs(context).getString(KEY_GATEWAY_USER, DEFAULT_GATEWAY_USER) ?: DEFAULT_GATEWAY_USER
 
     fun gatewayPass(context: Context): String =
-        prefs(context).getString(KEY_GATEWAY_PASS, "") ?: ""
+        prefs(context).getString(KEY_GATEWAY_PASS, DEFAULT_GATEWAY_PASS)
+            ?.takeIf { it.isNotEmpty() }
+            ?: DEFAULT_GATEWAY_PASS
 
     fun saveGateway(context: Context, port: String, user: String, pass: String) {
         prefs(context).edit()
