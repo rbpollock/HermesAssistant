@@ -26,13 +26,22 @@ val appVersionName = providers.exec {
     ?: "0.0.0"
 
 val appVersionCode = run {
-    // Leading-digit parsing: "2.0.0-alpha1" -> [2, 0, 0] so pre-release
-    // tags still yield a strictly increasing versionCode (20000).
-    val parts = appVersionName.split(".").mapNotNull { part ->
-        part.takeWhile { it.isDigit() }.toIntOrNull()
+    // Strictly-increasing code for any tag shape:
+    //   "1.10.2"        -> 1*100000 + 10*1000 + 2*10 + 0 = 110020
+    //   "2.0.0-alpha1"  -> 200001, "2.0.0-alpha2" -> 200002
+    //   "2.0.0"         -> 200000  (final always beats its pre-releases)
+    val parts = appVersionName.split(".").map { part ->
+        part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
     }
-    if (parts.size >= 3) parts[0] * 10000 + parts[1] * 100 + parts[2]
-    else 1
+    val major = parts.getOrElse(0) { 0 }
+    val minor = parts.getOrElse(1) { 0 }
+    val patch = parts.getOrElse(2) { 0 }
+    val pre = Regex("""-(?:alpha|beta|rc)(\d+)""")
+        .find(appVersionName)
+        ?.groupValues?.get(1)
+        ?.toIntOrNull()
+        ?: 0
+    major * 100000 + minor * 1000 + patch * 10 + pre
 }
 
 android {
