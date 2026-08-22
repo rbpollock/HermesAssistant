@@ -300,7 +300,16 @@ class HermesForegroundService : Service(), RecognitionListener {
                 // lost. Send the phrase over HTTP ourselves — this is the
                 // hands-free channel that works from the background.
                 if (dictationFromWakeWord) {
-                    sendDictatedTextHttp(text)
+                    if (ServerConfig.gatewayMode(this)) {
+                        // Gateway mode: hand off to the app's gateway client
+                        // via the process-wide bridge (works with a dead
+                        // activity too). The DICTATION_RESULT broadcast
+                        // above already carries alreadySent=true, so the
+                        // activity appends the bubble without re-sending.
+                        GatewayBridge.submit?.invoke(text)
+                    } else {
+                        sendDictatedTextHttp(text)
+                    }
                 }
             }
             // Back to wake word

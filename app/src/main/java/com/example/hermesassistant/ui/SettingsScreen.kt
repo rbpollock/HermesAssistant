@@ -41,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.hermesassistant.AppSettings
@@ -63,6 +64,10 @@ fun SettingsScreen(
         val context = LocalContext.current
         var host by remember { mutableStateOf(ServerConfig.host(context)) }
         var port by remember { mutableStateOf(ServerConfig.port(context)) }
+        var gatewayModeOn by remember { mutableStateOf(ServerConfig.gatewayMode(context)) }
+        var gwPort by remember { mutableStateOf(ServerConfig.gatewayPort(context)) }
+        var gwUser by remember { mutableStateOf(ServerConfig.gatewayUser(context)) }
+        var gwPass by remember { mutableStateOf(ServerConfig.gatewayPass(context)) }
         var btOnly by remember { mutableStateOf(AppSettings.playOverBluetoothOnly(context)) }
         var mute by remember { mutableStateOf(AppSettings.muteVoice(context)) }
         var status by remember { mutableStateOf("") }
@@ -124,6 +129,7 @@ fun SettingsScreen(
                         return@Button
                     }
                     ServerConfig.save(context, h, p)
+                    ServerConfig.saveGateway(context, gwPort, gwUser, gwPass)
                     status = "Saved: ${ServerConfig.httpBase(context)}"
                     onServerChanged() // reconnect against the new target
                 },
@@ -138,6 +144,50 @@ fun SettingsScreen(
             ) {
                 Text("SAVE", fontWeight = FontWeight.Bold)
             }
+
+            SectionLabel("Gateway (Hermes serve)")
+            Caption("Talk directly to the tui_gateway JSON-RPC API (:9119) instead of the relay (:8000). Wake word, voice, notifications and the overlay keep working either way.")
+            SettingsRow(
+                title = "Use Hermes Gateway",
+                subtitle = if (gatewayModeOn) "Transport: gateway (JSON-RPC)" else "Transport: relay (legacy)",
+                checked = gatewayModeOn,
+                onCheckedChange = {
+                    gatewayModeOn = it
+                    ServerConfig.setGatewayMode(context, it)
+                    onServerChanged()
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = gwPort,
+                onValueChange = { gwPort = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Gateway port") },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = fieldColors(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = gwUser,
+                onValueChange = { gwUser = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Gateway username") },
+                singleLine = true,
+                shape = RoundedCornerShape(16.dp),
+                colors = fieldColors(),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = gwPass,
+                onValueChange = { gwPass = it },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Gateway password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                shape = RoundedCornerShape(16.dp),
+                colors = fieldColors(),
+            )
 
             SectionLabel("Audio")
             SettingsRow(
@@ -181,6 +231,21 @@ fun SettingsScreen(
                             else "DISCONNECTED — reconnecting",
                     ok = state.isConnected,
                 )
+                if (state.gatewayMode) {
+                    DiagnosticRow(
+                        label = "Gateway",
+                        value = state.gatewayState,
+                        ok = state.gatewayState == "OPEN",
+                    )
+                    if (state.lastGatewayAt > 0L) {
+                        val ago = ((System.currentTimeMillis() - state.lastGatewayAt) / 1000).coerceAtLeast(0)
+                        DiagnosticRow(
+                            label = "Last gateway event",
+                            value = "${state.lastGatewayEvent} · ${ago}s ago",
+                            ok = true,
+                        )
+                    }
+                }
                 DiagnosticRow(
                     label = "Notification permission",
                     value = if (permGranted) "GRANTED" else "DENIED (Android 13+ blocks shade items)",

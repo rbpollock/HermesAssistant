@@ -216,6 +216,14 @@ class AudioPlayer(private val context: Context) {
         }
     }
 
+    /** Queue a plain TTS reply (gateway mode). Mute + BT route respected. */
+    fun speakText(text: String) {
+        if (AppSettings.muteVoice(context)) return
+        if (!AppSettings.playOverBluetoothOnly(context) || isBluetoothConnected()) {
+            enqueue(PlaybackItem(audioFile = null, spokenText = text))
+        }
+    }
+
     // Parked response waiting for a tap when BT-only + no headset.
     private var pendingAudioFile: File? = null
     fun pendingAudio(): File? = pendingAudioFile

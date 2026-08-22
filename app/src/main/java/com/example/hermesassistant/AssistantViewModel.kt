@@ -46,6 +46,11 @@ data class AssistantUiState(
     // Live mic amplitude (0f..1f, smoothed) while listening — drives the
     // orb/waveform. 0 when not listening.
     val rmsLevel: Float = 0f,
+    // Gateway (tui_gateway JSON-RPC) transport state, for Diagnostics.
+    val gatewayMode: Boolean = false,
+    val gatewayState: String = "IDLE",
+    val lastGatewayEvent: String = "",
+    val lastGatewayAt: Long = 0L,
 )
 
 /**
@@ -71,6 +76,16 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private val chatHistory = ChatHistoryStore(context)
     private val sessionStore = SessionStore(context)
     private val notificationManager = androidx.core.app.NotificationManagerCompat.from(context)
+
+    // Gateway (tui_gateway JSON-RPC) transport — active when gatewayMode.
+    private var gatewayAuth: GatewayAuth? = null
+    private var gatewayClient: GatewayClient? = null
+    private var gatewayApi: GatewayApi? = null
+    private var gatewaySessionId: String = ""
+    private var gatewayTurnInFlight = false
+    private val pendingReplyText = StringBuilder()
+
+    private val gatewayMode: Boolean get() = ServerConfig.gatewayMode(context)
 
     // WS state
     private var pendingMessage: String? = null
@@ -114,6 +129,7 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         wireAudio()
         wireVoice()
         audio.initTts()
+        if (gatewayMode) initGateway()
     }
 
     private fun startForegroundServiceIfPossible() {
@@ -193,6 +209,174 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 if (flushingQueue) sendNextQueued()
             }
         })
+    }
+
+    // ------------------------------------------------------------------
+    // Gateway (tui_gateway JSON-RPC) wiring
+    // ------------------------------------------------------------------
+
+    private fun initGateway() {
+        val auth = GatewayAuth(context)
+        val client = GatewayClient(context, auth, viewModelScope)
+        gatewayAuth = auth
+        gatewayClient = client
+        gatewayApi = GatewayApi(client)
+        wireGateway(client)
+        GatewayBridge.submit = { text ->
+            viewModelScope.launch { gatewaySendText(text) }
+        }
+        _uiState.update { it.copy(gatewayMode = true) }
+        client.connect()
+    }
+
+    private fun wireGateway(client: GatewayClient) {
+        client.attach(object : GatewayClient.Listener {
+            override fun onStateChanged(state: GatewayClient.State) {
+                val connected = state == GatewayClient.State.OPEN
+                _uiState.update { it.copy(isConnected = connected, gatewayState = state.name) }
+                when (state) {
+                    GatewayClient.State.OPEN -> {
+                        setStatusInternal("Gateway connected", StatusRingView.State.CONNECTED)
+                        ensureGatewaySession()
+                    }
+                    GatewayClient.State.CLOSED, GatewayClient.State.ERROR -> {
+                        setStatusInternal("Gateway disconnected — reconnecting…", StatusRingView.State.IDLE)
+                    }
+                    else -> Unit
+                }
+            }
+
+            override fun onEvent(type: String, payload: JSONObject?, sessionId: String?) {
+                handleGatewayEvent(type, payload)
+            }
+
+            override fun onFatal(message: String) {
+                setStatusInternal(message, StatusRingView.State.IDLE)
+                _uiState.update {
+                    it.copy(lastGatewayEvent = message, lastGatewayAt = System.currentTimeMillis())
+                }
+            }
+        })
+    }
+
+    /** Create (once) the gateway session this app instance talks through. */
+    private fun ensureGatewaySession() {
+        if (gatewaySessionId.isNotEmpty()) {
+            flushQueueIfAny()
+            return
+        }
+        viewModelScope.launch {
+            try {
+                gatewaySessionId = gatewayApi?.createSession().orEmpty()
+                if (gatewaySessionId.isNotEmpty()) {
+                    setStatusInternal("Gateway ready", StatusRingView.State.CONNECTED)
+                    flushQueueIfAny()
+                }
+            } catch (e: Exception) {
+                setStatusInternal("Gateway session error: ${e.message}", StatusRingView.State.IDLE)
+            }
+        }
+    }
+
+    private fun handleGatewayEvent(type: String, payload: JSONObject?) {
+        _uiState.update {
+            it.copy(lastGatewayEvent = type, lastGatewayAt = System.currentTimeMillis())
+        }
+        when (type) {
+            GatewayEvents.MESSAGE_DELTA -> {
+                val text = payload?.optString("text", "").orEmpty()
+                if (text.isNotEmpty()) pendingReplyText.append(text)
+            }
+
+            GatewayEvents.MESSAGE_COMPLETE -> {
+                val text = payload?.optString("text")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: pendingReplyText.toString()
+                pendingReplyText.setLength(0)
+                gatewayTurnInFlight = false
+                if (text.isNotBlank()) handleGatewayReply(text.trim())
+                // One turn at a time: send the next queued message.
+                if (chatHistory.queue.isNotEmpty()) sendNextQueued()
+            }
+
+            GatewayEvents.THINKING_DELTA -> {
+                if (_uiState.value.statusState != StatusRingView.State.THINKING) {
+                    setStatusInternal("Thinking…", StatusRingView.State.THINKING)
+                }
+            }
+
+            GatewayEvents.STATUS_UPDATE -> {
+                val text = payload?.optString("text").orEmpty()
+                if (text.isNotEmpty()) setStatusInternal(text, StatusRingView.State.THINKING)
+            }
+
+            GatewayEvents.TOOL_START -> {
+                val name = payload?.optString("name", "tool").orEmpty()
+                setStatusInternal("Tool: $name…", StatusRingView.State.THINKING)
+            }
+
+            GatewayEvents.TOOL_COMPLETE -> {
+                val name = payload?.optString("name", "tool").orEmpty()
+                setStatusInternal("Tool done: $name", StatusRingView.State.CONNECTED)
+            }
+
+            GatewayEvents.APPROVAL_REQUEST, GatewayEvents.CLARIFY_REQUEST,
+            GatewayEvents.SUDO_REQUEST, GatewayEvents.SECRET_REQUEST -> {
+                setStatusInternal("Hermes needs your input (M2)", StatusRingView.State.IDLE)
+            }
+
+            GatewayEvents.ERROR -> {
+                val message = payload?.optString("message", "gateway error").orEmpty()
+                setStatusInternal("Gateway error: $message", StatusRingView.State.IDLE)
+            }
+
+            // SESSION_INFO, MESSAGE_START, SESSIONS_CHANGED, ... are noise.
+        }
+    }
+
+    /** A completed gateway reply: history, TTS, and a shade notification. */
+    private fun handleGatewayReply(text: String) {
+        setStatusInternal("Hermes: $text", StatusRingView.State.CONNECTED)
+        audio.rememberSpokenResponse(text)
+        chatHistory.append(
+            ChatMessage("hermes", text, sessionId = gatewaySessionId, sessionTitle = "Gateway")
+        )
+        pushState()
+        if (AppSettings.muteVoice(context)) return
+        audio.speakText(text)
+        // Keep notifications working in gateway mode (relay notifies are
+        // not connected here): surface the completed reply in the shade.
+        try {
+            showSystemNotification(
+                "Hermes finished · Gateway",
+                text,
+                host = "gateway",
+                urgent = false,
+                sessionId = gatewaySessionId,
+            )
+        } catch (e: Exception) {
+            // Notification is best-effort; never break the reply flow.
+        }
+    }
+
+    /** Submit a prompt through the gateway (one in-flight turn at a time). */
+    private fun gatewaySendText(text: String) {
+        val sid = gatewaySessionId
+        if (sid.isEmpty()) {
+            gatewayClient?.connect()
+            return
+        }
+        viewModelScope.launch {
+            gatewayTurnInFlight = true
+            pendingReplyText.setLength(0)
+            try {
+                gatewayApi?.submit(sid, text)
+            } catch (e: Exception) {
+                gatewayTurnInFlight = false
+                setStatusInternal("Gateway send failed: ${e.message}", StatusRingView.State.IDLE)
+                gatewayClient?.connect()
+            }
+        }
     }
 
     private fun wireAudio() {
@@ -376,6 +560,27 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
        setStatusInternal("You: $userText", StatusRingView.State.THINKING)
         pushState()
 
+        if (gatewayMode) {
+            // Gateway transport: one session, one in-flight turn. Queued
+            // messages flush on gateway ready / message.complete.
+            when {
+                gatewaySessionId.isEmpty() -> {
+                    _uiState.update { it.copy(isConnected = false) }
+                    setStatusInternal("Gateway not ready — message queued", StatusRingView.State.IDLE)
+                    chatHistory.enqueueExisting(userMsg.ts)
+                    pushState()
+                    gatewayClient?.connect()
+                }
+                gatewayTurnInFlight -> {
+                    setStatusInternal("Queued: $userText", StatusRingView.State.THINKING)
+                    chatHistory.enqueueExisting(userMsg.ts)
+                    pushState()
+                }
+                else -> gatewaySendText(userText)
+            }
+            return
+        }
+
         val payload = if (replySessionId.isNotEmpty()) {
             "{\"message\": ${JSONObject.quote(userText)}, \"session_id\": ${JSONObject.quote(replySessionId)}}"
         } else {
@@ -434,6 +639,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Open the network connection (idempotent). */
     fun connectIfNeeded() {
+        if (gatewayMode) {
+            gatewayClient?.connect()
+            return
+        }
         if (!relay.isConnected) relay.connect()
     }
 
@@ -450,6 +659,14 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
      * state against the old host).
      */
     fun reconfigureServer() {
+        if (gatewayMode) {
+            // Fresh auth + fresh session against the new target.
+            gatewayClient?.disconnect()
+            gatewayAuth?.clearSession()
+            gatewaySessionId = ""
+            gatewayClient?.connect()
+            return
+        }
         relay.cancel()
         connectIfNeeded()
     }
@@ -636,7 +853,9 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         chatHistory.markQueuedDelivered(next)
        setStatusInternal("Sending queued: ${next.text}", StatusRingView.State.THINKING)
         pushState()
-        if (relay.send(next.text)) {
+        if (gatewayMode) {
+            gatewaySendText(next.text)
+        } else if (relay.send(next.text)) {
             // Response arrives via onMessage; audio_end triggers the next send
         } else {
             flushingQueue = false
@@ -732,6 +951,8 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     override fun onCleared() {
+        GatewayBridge.submit = null
+        gatewayClient?.disconnect()
         relay.cancel()
         audio.shutdown()
         voice.shutdown()

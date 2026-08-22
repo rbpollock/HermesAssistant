@@ -54,6 +54,11 @@ class NotificationReplyReceiver : BroadcastReceiver() {
             return
         }
 
+        if (ServerConfig.gatewayMode(context)) {
+            handleGatewayReply(context, sessionId, sessionTitle, text)
+            return
+        }
+
         // Record the user's reply in the shared chat history immediately,
         // tagged with the session it was sent to. MainActivity reads the
         // same chat_history.json, so the message appears in the app even
@@ -98,6 +103,38 @@ class NotificationReplyReceiver : BroadcastReceiver() {
                 }
             } catch (e: Exception) {
                 notifyReply(context, "Reply not sent", "Network error: ${e.message}", sessionId, sessionTitle)
+            } finally {
+                pendingResult.finish()
+            }
+        }.start()
+    }
+
+    /**
+     * Gateway-mode inline reply: one-shot WS submit straight to the
+     * tui_gateway session (the process may be cold-started here, so there
+     * is no ViewModel to reuse). Reply comes back as a follow-up
+     * notification, exactly like the relay path.
+     */
+    private fun handleGatewayReply(context: Context, sessionId: String, sessionTitle: String, text: String) {
+        appendToHistory(context, "user", text, sessionId, sessionTitle)
+        broadcastHistoryUpdated(context)
+        val pendingResult = goAsync()
+        Thread {
+            try {
+                val auth = GatewayAuth(context)
+                val ticket = auth.mintTicket()
+                val reply = GatewayOneShot.submit(
+                    ServerConfig.gatewayWsBase(context), ticket, sessionId, text,
+                )
+                if (reply.isNullOrEmpty()) {
+                    notifyReply(context, "Reply not sent", "No reply from gateway", sessionId, sessionTitle)
+                } else {
+                    appendToHistory(context, "hermes", reply, sessionId, sessionTitle)
+                    broadcastHistoryUpdated(context)
+                    notifyReply(context, "Hermes replied", reply, sessionId, sessionTitle)
+                }
+            } catch (e: Exception) {
+                notifyReply(context, "Reply not sent", "Gateway error: ${e.message}", sessionId, sessionTitle)
             } finally {
                 pendingResult.finish()
             }
