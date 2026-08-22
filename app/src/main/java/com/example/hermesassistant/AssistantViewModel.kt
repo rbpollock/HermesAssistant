@@ -51,6 +51,11 @@ data class AssistantUiState(
     val gatewayState: String = "IDLE",
     val lastGatewayEvent: String = "",
     val lastGatewayAt: Long = 0L,
+    // Live gateway transcript (desktop-style parts) + turn state.
+    val transcriptMessages: List<GatewayMsg> = emptyList(),
+    val turnBusy: Boolean = false,
+    val turnAwaitingResponse: Boolean = false,
+    val gatewayNeedsInput: Boolean = false,
 )
 
 /**
@@ -83,7 +88,15 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
     private var gatewayApi: GatewayApi? = null
     private var gatewaySessionId: String = ""
     private var gatewayTurnInFlight = false
-    private val pendingReplyText = StringBuilder()
+
+    // Live gateway transcript (desktop port: GatewayTranscript reducer +
+    // delta batching). The transcript is the FULL-sheet view in gateway
+    // mode; chatHistory remains the durable log.
+    private val transcript = GatewayTranscript()
+    private val deltaFlushHandler = Handler(Looper.getMainLooper())
+    private var deltaFlushRunnable: Runnable? = null
+    private val pendingTextDelta = StringBuilder()
+    private val pendingReasoningDelta = StringBuilder()
 
     private val gatewayMode: Boolean get() = ServerConfig.gatewayMode(context)
 
@@ -283,24 +296,61 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
             it.copy(lastGatewayEvent = type, lastGatewayAt = System.currentTimeMillis())
         }
         when (type) {
+            GatewayEvents.MESSAGE_START -> {
+                transcript.onMessageStart()
+                pushTranscriptState()
+                setStatusInternal("Hermes is loading a response", StatusRingView.State.THINKING)
+            }
+
             GatewayEvents.MESSAGE_DELTA -> {
                 val text = payload?.optString("text", "").orEmpty()
-                if (text.isNotEmpty()) pendingReplyText.append(text)
+                if (text.isNotEmpty()) {
+                    pendingTextDelta.append(text)
+                    scheduleDeltaFlush()
+                }
             }
 
             GatewayEvents.MESSAGE_COMPLETE -> {
-                val text = payload?.optString("text")
+                flushDeltasNow()
+                val payloadText = payload?.optString("text")
                     ?.takeIf { it.isNotBlank() }
-                    ?: pendingReplyText.toString()
-                pendingReplyText.setLength(0)
+                    ?.trim()
+                transcript.onMessageComplete(payloadText)
+                pushTranscriptState()
                 gatewayTurnInFlight = false
-                if (text.isNotBlank()) handleGatewayReply(text.trim())
+                val interrupted = transcript.turn.interrupted
+                if (interrupted) {
+                    setStatusInternal("Stopped", StatusRingView.State.IDLE)
+                } else {
+                    val text = payloadText ?: transcript.messages.lastOrNull()
+                        ?.parts?.filterIsInstance<GatewayPart.Text>()
+                        ?.joinToString("") { it.text }?.trim()
+                    if (!text.isNullOrEmpty()) handleGatewayReply(text)
+                }
                 // One turn at a time: send the next queued message.
                 if (chatHistory.queue.isNotEmpty()) sendNextQueued()
             }
 
+            GatewayEvents.REASONING_DELTA -> {
+                val text = payload?.optString("text", "").orEmpty()
+                if (text.isNotEmpty()) {
+                    pendingReasoningDelta.append(text)
+                    scheduleDeltaFlush()
+                }
+            }
+
+            GatewayEvents.REASONING_AVAILABLE -> {
+                flushDeltasNow()
+                transcript.appendReasoningDelta(payload?.optString("text", "").orEmpty(), replace = true)
+                pushTranscriptState()
+            }
+
             GatewayEvents.THINKING_DELTA -> {
-                if (_uiState.value.statusState != StatusRingView.State.THINKING) {
+                // Desktop ignores thinking.delta as content (spinner status
+                // only); keep the status alive while nothing else streams.
+                if (transcript.turn.awaitingResponse ||
+                    (transcript.turn.busy && !hasAssistantText())
+                ) {
                     setStatusInternal("Thinking…", StatusRingView.State.THINKING)
                 }
             }
@@ -310,29 +360,77 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 if (text.isNotEmpty()) setStatusInternal(text, StatusRingView.State.THINKING)
             }
 
-            GatewayEvents.TOOL_START -> {
-                val name = payload?.optString("name", "tool").orEmpty()
-                setStatusInternal("Tool: $name…", StatusRingView.State.THINKING)
+            GatewayEvents.TOOL_START, GatewayEvents.TOOL_GENERATING,
+            GatewayEvents.TOOL_PROGRESS -> {
+                flushDeltasNow()
+                transcript.upsertTool(
+                    name = payload?.optString("name", "tool").orEmpty(),
+                    toolId = payload?.optString("tool_id").orEmpty()
+                        .ifEmpty { payload?.optString("id").orEmpty() },
+                    argsText = payload?.optString("args").orEmpty(),
+                    phase = ToolStatus.RUNNING,
+                )
+                pushTranscriptState()
+                setStatusInternal(
+                    "Tool: ${payload?.optString("name", "tool").orEmpty()}…",
+                    StatusRingView.State.THINKING,
+                )
             }
 
             GatewayEvents.TOOL_COMPLETE -> {
-                val name = payload?.optString("name", "tool").orEmpty()
-                setStatusInternal("Tool done: $name", StatusRingView.State.CONNECTED)
+                flushDeltasNow()
+                val isError = payload?.optBoolean("error", false) == true
+                val result = payload?.optJSONObject("result")
+                transcript.upsertTool(
+                    name = payload?.optString("name", "tool").orEmpty(),
+                    toolId = payload?.optString("tool_id").orEmpty()
+                        .ifEmpty { payload?.optString("id").orEmpty() },
+                    argsText = "",
+                    phase = if (isError) ToolStatus.ERROR else ToolStatus.COMPLETE,
+                    resultText = result?.optString("summary").orEmpty()
+                        .ifEmpty { result?.optString("message").orEmpty() },
+                    durationLabel = formatGatewayDuration(result?.optDouble("duration_s", 0.0) ?: 0.0),
+                )
+                pushTranscriptState()
+                setStatusInternal(
+                    "Tool done: ${payload?.optString("name", "tool").orEmpty()}",
+                    StatusRingView.State.CONNECTED,
+                )
             }
 
             GatewayEvents.APPROVAL_REQUEST, GatewayEvents.CLARIFY_REQUEST,
             GatewayEvents.SUDO_REQUEST, GatewayEvents.SECRET_REQUEST -> {
+                transcript.setNeedsInput(true)
+                pushTranscriptState()
                 setStatusInternal("Hermes needs your input (M2)", StatusRingView.State.IDLE)
+                try {
+                    showSystemNotification(
+                        "Hermes needs your input",
+                        "A step is waiting for approval (M2)",
+                        host = "gateway",
+                        urgent = true,
+                        sessionId = gatewaySessionId,
+                    )
+                } catch (e: Exception) {
+                    // best-effort
+                }
             }
 
             GatewayEvents.ERROR -> {
                 val message = payload?.optString("message", "gateway error").orEmpty()
-                setStatusInternal("Gateway error: $message", StatusRingView.State.IDLE)
+                transcript.fail(message)
+                pushTranscriptState()
+                gatewayTurnInFlight = false
+                setStatusInternal("Error: $message", StatusRingView.State.IDLE)
             }
 
-            // SESSION_INFO, MESSAGE_START, SESSIONS_CHANGED, ... are noise.
+            // SESSION_INFO, MESSAGE_START handled above, SESSIONS_CHANGED
+            // and the rest are background noise.
         }
     }
+
+    private fun hasAssistantText(): Boolean =
+        transcript.messages.lastOrNull()?.parts?.any { it is GatewayPart.Text && it.text.isNotBlank() } == true
 
     /** A completed gateway reply: history, TTS, and a shade notification. */
     private fun handleGatewayReply(text: String) {
@@ -361,6 +459,10 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     /** Submit a prompt through the gateway (one in-flight turn at a time). */
     private fun gatewaySendText(text: String) {
+        // The transcript is the live view in gateway mode: show the bubble
+        // immediately, even if the gateway isn't ready (it will queue).
+        transcript.addUserMessage(text)
+        pushTranscriptState()
         val sid = gatewaySessionId
         if (sid.isEmpty()) {
             gatewayClient?.connect()
@@ -368,7 +470,6 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
         }
         viewModelScope.launch {
             gatewayTurnInFlight = true
-            pendingReplyText.setLength(0)
             try {
                 gatewayApi?.submit(sid, text)
             } catch (e: Exception) {
@@ -377,6 +478,72 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
                 gatewayClient?.connect()
             }
         }
+    }
+
+    /** Stop the running turn (desktop Stop/Esc semantics). */
+    fun interruptCurrentTurn() {
+        transcript.interrupt()
+        gatewayTurnInFlight = false
+        val sid = gatewaySessionId
+        if (sid.isNotEmpty()) {
+            viewModelScope.launch {
+                try {
+                    gatewayApi?.interrupt(sid)
+                } catch (e: Exception) {
+                    // best-effort
+                }
+            }
+        }
+        setStatusInternal("Stopping…", StatusRingView.State.IDLE)
+        pushTranscriptState()
+    }
+
+    // ------------------------------------------------------------------
+    // Transcript delta batching (desktop STREAM_DELTA_FLUSH_MS ~33ms)
+    // ------------------------------------------------------------------
+
+    private fun scheduleDeltaFlush() {
+        if (deltaFlushRunnable != null) return
+        val r = Runnable {
+            deltaFlushRunnable = null
+            flushDeltasNow()
+        }
+        deltaFlushRunnable = r
+        deltaFlushHandler.postDelayed(r, DELTA_FLUSH_MS)
+    }
+
+    private fun flushDeltasNow() {
+        deltaFlushRunnable?.let { deltaFlushHandler.removeCallbacks(it) }
+        deltaFlushRunnable = null
+        var dirty = false
+        if (pendingTextDelta.isNotEmpty()) {
+            transcript.appendTextDelta(pendingTextDelta.toString())
+            pendingTextDelta.setLength(0)
+            dirty = true
+        }
+        if (pendingReasoningDelta.isNotEmpty()) {
+            transcript.appendReasoningDelta(pendingReasoningDelta.toString())
+            pendingReasoningDelta.setLength(0)
+            dirty = true
+        }
+        if (dirty) pushTranscriptState()
+    }
+
+    private fun pushTranscriptState() {
+        _uiState.update {
+            it.copy(
+                transcriptMessages = transcript.messages,
+                turnBusy = transcript.turn.busy,
+                turnAwaitingResponse = transcript.turn.awaitingResponse,
+                gatewayNeedsInput = transcript.turn.needsInput,
+            )
+        }
+    }
+
+    private fun formatGatewayDuration(seconds: Double): String = when {
+        seconds <= 0 -> ""
+        seconds < 60 -> String.format(java.util.Locale.US, "%.1fs", seconds)
+        else -> "${(seconds / 60).toInt()}m ${(seconds % 60).toInt()}s"
     }
 
     private fun wireAudio() {
@@ -963,5 +1130,6 @@ class AssistantViewModel(application: Application) : AndroidViewModel(applicatio
 
     companion object {
         private const val NOTIFICATION_CHANNEL = "hermes_events"
+        private const val DELTA_FLUSH_MS = 50L
     }
 }

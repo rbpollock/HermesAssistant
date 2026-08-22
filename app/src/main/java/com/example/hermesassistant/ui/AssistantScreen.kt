@@ -29,15 +29,12 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
@@ -63,7 +60,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -106,6 +102,7 @@ fun AssistantScreen(
     onSelectSession: (KnownSession) -> Unit,
     onSelectMessage: (ChatMessage) -> Unit,
     onSettings: () -> Unit,
+    onStop: () -> Unit = {},
 ) {
     HermesTheme {
         val density = LocalDensity.current
@@ -199,6 +196,7 @@ fun AssistantScreen(
                     onSelectSession = onSelectSession,
                     onSelectMessage = onSelectMessage,
                     onSettings = onSettings,
+                    onStop = onStop,
                     sheetValue = sheetState.currentValue,
                     onExpand = { scope.launch { sheetState.animateTo(SheetValue.FULL) } },
                     onCollapse = { scope.launch { sheetState.animateTo(SheetValue.PEEK) } },
@@ -217,6 +215,7 @@ private fun SheetContent(
     onSelectSession: (KnownSession) -> Unit,
     onSelectMessage: (ChatMessage) -> Unit,
     onSettings: () -> Unit,
+    onStop: () -> Unit,
     sheetValue: SheetValue,
     onExpand: () -> Unit,
     onCollapse: () -> Unit,
@@ -349,9 +348,10 @@ private fun SheetContent(
             }
         }
 
-        // History (visible when expanded — one coherent surface).
-        // Jetchat-style: pinned session header + bottom-pinned list with
-        // a jump-to-bottom button when the user has scrolled up.
+        // History / transcript (visible when expanded — one coherent
+        // surface). Gateway mode renders the desktop-ported live
+        // transcript; relay mode keeps the Jetchat-style history list.
+        // Both share the jump-to-bottom affordance.
         if (sheetValue == SheetValue.FULL) {
             val listState = rememberLazyListState()
             Box(
@@ -359,23 +359,36 @@ private fun SheetContent(
                     .fillMaxWidth()
                     .weight(1f)
             ) {
-                MessageList(
-                    messages = state.messages,
-                    onSelectMessage = onSelectMessage,
-                    listState = listState,
-                    modifier = Modifier.fillMaxSize(),
-                )
+                if (state.gatewayMode) {
+                    GatewayTranscriptList(
+                        messages = state.transcriptMessages,
+                        turnBusy = state.turnBusy,
+                        turnAwaitingResponse = state.turnAwaitingResponse,
+                        needsInput = state.gatewayNeedsInput,
+                        listState = listState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    MessageList(
+                        messages = state.messages,
+                        onSelectMessage = onSelectMessage,
+                        listState = listState,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
                 val showJumpToBottom by remember {
                     derivedStateOf {
                         val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
-                        lastVisible < (state.messages.lastIndex)
+                        val lastIndex = if (state.gatewayMode) state.transcriptMessages.lastIndex else state.messages.lastIndex
+                        lastVisible < lastIndex
                     }
                 }
                 if (showJumpToBottom) {
                     JumpToBottom(
                         onClicked = {
                             scope.launch {
-                                listState.animateScrollToItem(state.messages.lastIndex)
+                                val lastIndex = if (state.gatewayMode) state.transcriptMessages.lastIndex else state.messages.lastIndex
+                                listState.animateScrollToItem(lastIndex)
                             }
                         },
                         modifier = Modifier
@@ -386,52 +399,25 @@ private fun SheetContent(
             }
         }
 
-        // Input row: text field + inline mic action + send. The mic icon
-        // replaces the old full-width speak button (same onSpeak action:
-        // cancel while listening / play parked / start listening).
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 10.dp, bottom = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = textInput,
-                onValueChange = { textInput = it },
-                modifier = Modifier.weight(1f),
-                placeholder = { Text("Type a message...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                singleLine = true,
-                shape = RoundedCornerShape(16.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    focusedIndicatorColor = Color.Transparent,
-                    unfocusedIndicatorColor = Color.Transparent,
-                    cursorColor = MaterialTheme.colorScheme.primary,
-                ),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                keyboardActions = KeyboardActions(
-                    onSend = {
-                        onSendText(textInput.trim())
-                        textInput = ""
-                        keyboard?.hide()
-                    }
-                ),
-            )
-            Spacer(Modifier.width(8.dp))
-            MicActionButton(state = state, onClick = onSpeak)
-            IconButton(onClick = {
-                onSendText(textInput.trim())
-                textInput = ""
-                keyboard?.hide()
-            }) {
-                Icon(
-                    imageVector = Icons.Default.Send,
-                    contentDescription = "Send",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
+        // Composer: text field + inline mic + send; the send button
+        // becomes Stop while a gateway turn is running (desktop rule).
+        ComposerBar(
+            value = textInput,
+            onValueChange = { textInput = it },
+            onSend = {
+                val t = textInput.trim()
+                if (t.isNotEmpty()) {
+                    onSendText(t)
+                    textInput = ""
+                    keyboard?.hide()
+                }
+            },
+            onMic = onSpeak,
+            onStop = onStop,
+            busy = state.gatewayMode && state.turnBusy,
+            voiceActive = state.voiceActive,
+            hasParkedAudio = state.hasParkedAudio,
+        )
     }
 }
 
